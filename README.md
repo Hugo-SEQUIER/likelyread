@@ -83,6 +83,31 @@ Open rate means *emails with at least one open / tracked emails*. Apple prefetch
 
 The dashboard is a static page with no data of its own: it reads the authenticated API with your token. Set `DASHBOARD=false` to turn it off.
 
+## Email sent by scripts and AI agents
+
+Anything that sends email itself (a script, a cron job, an AI agent) can use the `likelyread` CLI in `cli/`. It is a single Python file with no dependencies, and every command prints JSON.
+
+```bash
+ln -s "$PWD/cli/likelyread.py" ~/.local/bin/likelyread
+export LIKELYREAD_URL=https://t.example.com   # what recipients load the pixel from
+export LIKELYREAD_TOKEN=...                   # or ~/.config/likelyread/config.json (mode 600)
+likelyread ping
+```
+
+Draft now, send later:
+
+```bash
+likelyread pixel                                   # {"id", "url", "img"}: keep the id with the draft
+likelyread html --raw --id ID --file body.txt      # plain text to an HTML part, pixel appended
+# ... send multipart/alternative: the text part unchanged, the HTML part above ...
+likelyread track --id ID --subject "..." --to maya@example.com \
+  --campaign "Q4 outreach" --from me@example.com --sent-at 1792251301849
+```
+
+`--sent-at` takes unix seconds, unix milliseconds (Gmail's `internalDate`) or ISO 8601, so registration can happen after the send, for example during reconciliation. Hits before the send time count as a draft preview, never as an open. Read results with `likelyread ls --campaign "Q4 outreach" --status opened`, `likelyread show ID`, `likelyread campaigns` and `likelyread stats`.
+
+Send one email per recipient if you want to know who opened. Plain-text emails cannot carry a pixel: add an HTML part.
+
 ## Configuration
 
 All settings live in `deploy/.env` (see `.env.example`):

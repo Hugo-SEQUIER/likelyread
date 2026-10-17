@@ -521,3 +521,16 @@ def test_dashboard_assets_have_correct_types(client):
     assert client.get("/assets/bricolage-latin.woff2").headers["content-type"] == "font/woff2"
     assert client.get("/assets/favicon.svg").headers["content-type"] == "image/svg+xml"
     assert client.get("/assets/fonts.css").headers["content-type"].startswith("text/css")
+
+
+def test_hit_before_send_is_a_draft_preview(client, clock):
+    eid = new_id()
+    hit(client, eid)  # pixel loaded while the email was still a draft
+    clock["now"] += 3600
+    register(client, eid)  # registered when actually sent
+    clock["now"] += 300
+    hit(client, eid, ua=GMAIL_UA_2026)
+    s = get_status(client, eid)
+    assert [h["kind"] for h in s["hits"]] == ["self", "open"]
+    assert "draft preview" in s["hits"][0]["reason"]
+    assert s["opens"] == 1

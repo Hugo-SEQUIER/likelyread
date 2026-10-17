@@ -32,9 +32,15 @@ function accountEmail(): string | null {
   return extractEmail(account?.getAttribute("aria-label"));
 }
 
+/** The config with `senders` narrowed to the account signed in to this tab. */
+function tabConfig(): ContentConfig {
+  const account = accountEmail();
+  return { ...config, senders: (account && config.sendersByAccount?.[account]) || [] };
+}
+
 const tracker = new ComposeTracker(document, {
-  getConfig: () => config,
-  register: (email) => void send({ type: "register", email }),
+  getConfig: tabConfig,
+  register: (email) => void send({ type: "register", email, account: accountEmail() }),
   suppress: (id) => void send({ type: "suppress", id }),
   setCampaign: (campaign) => void send({ type: "setCampaign", campaign }),
   accountEmail,
@@ -64,7 +70,7 @@ new MutationObserver(scheduleScan).observe(document.documentElement, {
   attributeFilter: ["src"],
 });
 
-const CONFIG_KEYS = ["serverUrl", "token", "trackByDefault", "campaign", "senders", "campaignCache"];
+const CONFIG_KEYS = ["serverUrl", "token", "trackByDefault", "campaign", "sendersByAccount", "campaignCache"];
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || !CONFIG_KEYS.some((k) => k in changes)) return;
   void refreshConfig().then(() => {

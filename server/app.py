@@ -166,6 +166,10 @@ def explain_hit(
     ts: float, ua: str | None, sent_at: float | None, suppressions: list[float], cfg: Settings, via: str = "direct"
 ) -> tuple[str, str]:
     """Return (kind, reason). The first rule that matches wins."""
+    if sent_at is not None and ts < sent_at - 10:
+        # Agents can embed the pixel in a draft and register it once sent. Nobody
+        # else can load it before then, so an earlier hit is a preview.
+        return "self", "Before the email was sent: a draft preview."
     if sent_at is not None and sent_at - 10 <= ts <= sent_at + cfg.grace_seconds:
         return "self", f"Within {cfg.grace_seconds:g} s of sending: your own compose window."
     for s in suppressions:

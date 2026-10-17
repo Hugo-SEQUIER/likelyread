@@ -3,7 +3,9 @@ import { backoffMs, dnrRules, MAX_RETRY_MS, normalizeServerUrl, UUID4_RE } from 
 import { ApiError, apiFetch, getSettings, saveSettings, type ContentConfig, type Message, type QueueItem } from "./shared";
 
 const QUEUE_KEY = "queue";
-const SENDERS_KEY = "senders";
+// Per account, so a send-as address used in one Gmail account never makes another
+// account's view of that email count as yours (a second account is a real reader).
+const SENDERS_KEY = "sendersByAccount";
 const CAMPAIGN_CACHE_KEY = "campaignCache";
 const CAMPAIGN_CACHE_MS = 60_000;
 const FLUSH_ALARM = "likelyread-flush";
@@ -86,12 +88,18 @@ async function suppress(id: string): Promise<void> {
   }
 }
 
-async function rememberSender(sender: string | null | undefined): Promise<void> {
-  if (!sender) return;
-  const { [SENDERS_KEY]: list } = await chrome.storage.local.get(SENDERS_KEY);
-  const prev = Array.isArray(list) ? (list as string[]) : [];
+async function sendersByAccount(): Promise<Record<string, string[]>> {
+  const { [SENDERS_KEY]: map } = await chrome.storage.local.get(SENDERS_KEY);
+  return map && typeof map === "object" && !Array.isArray(map) ? (map as Record<string, string[]>) : {};
+}
+
+async function rememberSender(account: string | null | undefined, sender: string | null | undefined): Promise<void> {
+  if (!account || !sender || account === sender) return;
+  const map = await sendersByAccount();
+  const prev = Array.isArray(map[account]) ? map[account] : [];
   if (prev[0] === sender) return;
-  await chrome.storage.local.set({ [SENDERS_KEY]: [sender, ...prev.filter((s) => s !== sender)].slice(0, 20) });
+  map[account] = [sender, ...prev.filter((s) => s !== sender)].slice(0, 20);
+  await chrome.storage.local.set({ [SENDERS_KEY]: map });
 }
 
 /** Campaign names for the compose picker, cached for a minute. */
@@ -113,14 +121,14 @@ async function campaignNames(): Promise<string[]> {
 
 async function contentConfig(): Promise<ContentConfig> {
   const s = await getSettings();
-  const { [SENDERS_KEY]: senders } = await chrome.storage.local.get(SENDERS_KEY);
   return {
     configured: !!(s.serverUrl && s.token),
     serverUrl: s.serverUrl,
     trackByDefault: s.trackByDefault,
     campaign: s.campaign,
     campaigns: await campaignNames(),
-    senders: Array.isArray(senders) ? (senders as string[]) : [],
+    senders: [],
+    sendersByAccount: await sendersByAccount(),
   };
 }
 
@@ -144,7 +152,7 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse) => {
     const email = msg.email;
     if (!UUID4_RE.test(email.id)) return false;
     enqueue({ email, attempts: 0, nextAt: 0 })
-      .then(() => rememberSender(email.sender))
+      .then(() => rememberSender(msg.account?.toLowerCase(), email.sender))
       .then(flush)
       .then(() => chrome.storage.local.remove(CAMPAIGN_CACHE_KEY))
       .then(() => sendResponse({ ok: true }));

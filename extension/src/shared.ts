@@ -29,12 +29,15 @@ export interface ContentConfig {
   campaign: string;
   /** Existing campaign names, most recent first, for the compose picker. */
   campaigns: string[];
-  /** Addresses this browser has sent tracked email from. */
+  /** Addresses the current Gmail account has sent tracked email from (send-as aliases). */
   senders: string[];
+  /** Per signed-in account, the addresses it sent from. Background fills this; the
+   * content script picks its own account's list into `senders`. */
+  sendersByAccount?: Record<string, string[]>;
 }
 
 export type Message =
-  | { type: "register"; email: PendingEmail }
+  | { type: "register"; email: PendingEmail; account?: string | null }
   | { type: "suppress"; id: string }
   | { type: "setCampaign"; campaign: string }
   | { type: "getConfig" };
