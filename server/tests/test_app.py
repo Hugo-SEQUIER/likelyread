@@ -442,3 +442,76 @@ def test_rate_limiter_never_resets_live_counters():
     assert not rl.allow("d", 1), "table full of live windows: new key refused, not reset"
     assert not rl.allow("a", 1), "a is still limited"
     assert rl.allow("d", 61), "expired windows are evicted"
+
+
+# ---- sender address and Gmail's current proxy --------------------------------
+
+GMAIL_UA_2026 = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/42.0.2311.135 Safari/537.36 Edge/12.246 Mozilla/5.0"
+)
+
+
+def test_current_gmail_proxy_ua_is_an_open_via_gmail(client, clock):
+    eid = new_id()
+    register(client, eid)
+    clock["now"] += 300
+    hit(client, eid, ua=GMAIL_UA_2026)
+    h = get_status(client, eid)["hits"][0]
+    assert (h["kind"], h["via"]) == ("open", "gmail_proxy"), "must not be mistaken for Apple's bare Mozilla/5.0"
+
+
+def test_google_ip_counts_as_gmail_proxy():
+    assert likelyread.hit_via("Mozilla/5.0 (X11)", "209.85.238.129") == "gmail_proxy"
+    assert likelyread.hit_via("Mozilla/5.0 (X11)", "8.8.4.4") == "direct"
+    assert likelyread.hit_via("Mozilla/5.0 (X11)", None) == "direct"
+    assert likelyread.hit_via("Mozilla/5.0 (X11)", "not-an-ip") == "direct"
+
+
+def test_sender_is_stored_filtered_and_listed(client, clock):
+    a, b = new_id(), new_id()
+    client.post("/api/emails", json={"id": a, "subject": "s", "recipients": [], "sender": " Hugo@Example.com "}, headers=AUTH)
+    clock["now"] += 10
+    client.post("/api/emails", json={"id": b, "subject": "s", "recipients": [], "sender": "sales@example.com"}, headers=AUTH)
+    assert get_status(client, a)["sender"] == "hugo@example.com"
+    ids = {e["id"] for e in client.get("/api/emails?sender=HUGO@example.com", headers=AUTH).json()}
+    assert ids == {a}
+    assert {e["id"] for e in client.get("/api/emails?q=sales@", headers=AUTH).json()} == {b}
+    senders = client.get("/api/senders", headers=AUTH).json()
+    assert [s["sender"] for s in senders] == ["sales@example.com", "hugo@example.com"]
+    assert client.get("/api/stats?sender=sales@example.com", headers=AUTH).json()["emails"] == 1
+
+
+def test_invalid_sender_is_dropped_and_retry_keeps_known_sender(client):
+    eid = new_id()
+    client.post("/api/emails", json={"id": eid, "recipients": [], "sender": "hugo@example.com"}, headers=AUTH)
+    client.post("/api/emails", json={"id": eid, "recipients": [], "sender": "not an address"}, headers=AUTH)
+    assert get_status(client, eid)["sender"] == "hugo@example.com"
+
+
+def test_old_database_gets_sender_column(tmp_path, monkeypatch, clock):
+    import sqlite3
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.executescript("CREATE TABLE emails (id TEXT PRIMARY KEY, subject TEXT, recipients TEXT, sent_at REAL, campaign TEXT);")
+    con.execute("INSERT INTO emails VALUES ('0f8fad5b-d9cb-469f-a165-70867728950e', 'old', '[]', 1, NULL)")
+    con.commit(); con.close()
+    monkeypatch.setenv("LIKELYREAD_TOKEN", TOKEN)
+    monkeypatch.setenv("DB_PATH", str(path))
+    c = TestClient(likelyread.create_app())
+    assert c.get("/api/emails", headers=AUTH).json()[0]["sender"] is None
+
+
+def test_every_hit_says_why(client, clock):
+    eid = new_id()
+    register(client, eid)
+    clock["now"] += 5
+    hit(client, eid)
+    clock["now"] += 100
+    hit(client, eid, ua=APPLE_UA)
+    clock["now"] += 100
+    hit(client, eid, ua=GMAIL_UA_2026)
+    reasons = [h["reason"] for h in get_status(client, eid)["hits"]]
+    assert "compose window" in reasons[0]
+    assert "Apple Mail" in reasons[1]
+    assert "Gmail's image proxy" in reasons[2]

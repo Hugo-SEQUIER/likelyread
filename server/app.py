@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -76,6 +77,13 @@ PIXEL_HEADERS = {
 
 UUID4_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 APPLE_MPP_UA = "Mozilla/5.0"
+# Gmail's image proxy. Older UA: "... (via ggpht.com GoogleImageProxy)". Since about 2023 it sends
+# a fixed, outdated Chrome/Edge string instead, so also match that string and Google's ranges.
+GMAIL_PROXY_UA_MARKERS = ("GoogleImageProxy", "Chrome/42.0.2311.135 Safari/537.36 Edge/12.246")
+GOOGLE_PROXY_NETS = tuple(
+    ipaddress.ip_network(n)
+    for n in ("66.102.0.0/20", "66.249.64.0/19", "209.85.128.0/17", "72.14.192.0/18", "74.125.0.0/16", "64.233.160.0/19")
+)
 UA_MAX = 512
 MAX_AGE_SECONDS = 30 * 86400
 # Hits for ids that were never registered are dropped after this long. The
@@ -91,7 +99,8 @@ CREATE TABLE IF NOT EXISTS emails (
   subject     TEXT,
   recipients  TEXT,
   sent_at     REAL,
-  campaign    TEXT
+  campaign    TEXT,
+  sender      TEXT
 );
 CREATE TABLE IF NOT EXISTS hits (
   id        INTEGER PRIMARY KEY,
@@ -131,6 +140,8 @@ class DB:
             cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(emails)")}
             if "campaign" not in cols:  # databases created by a pre-campaign build
                 self.conn.execute("ALTER TABLE emails ADD COLUMN campaign TEXT")
+            if "sender" not in cols:  # databases created before the sender address was stored
+                self.conn.execute("ALTER TABLE emails ADD COLUMN sender TEXT")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_campaign ON emails(campaign)")
 
     def execute(self, sql: str, params: tuple | list = ()) -> sqlite3.Cursor:
@@ -151,19 +162,41 @@ class DB:
 # --------------------------------------------------------------------------
 
 
-def classify_hit(ts: float, ua: str | None, sent_at: float | None, suppressions: list[float], cfg: Settings) -> str:
+def explain_hit(
+    ts: float, ua: str | None, sent_at: float | None, suppressions: list[float], cfg: Settings, via: str = "direct"
+) -> tuple[str, str]:
+    """Return (kind, reason). The first rule that matches wins."""
     if sent_at is not None and sent_at - 10 <= ts <= sent_at + cfg.grace_seconds:
-        return "self"
+        return "self", f"Within {cfg.grace_seconds:g} s of sending: your own compose window."
     for s in suppressions:
         if s - 5 <= ts <= s + cfg.suppress_window_seconds:
-            return "self"
+            return "self", f"{max(0, ts - s):.0f} s after you opened it yourself."
     if (ua or "").strip() == APPLE_MPP_UA:
-        return "prefetch"
-    return "open"
+        return "prefetch", "User agent is exactly Mozilla/5.0: Apple Mail loading images on delivery."
+    if via == "gmail_proxy":
+        return "open", "Loaded through Gmail's image proxy when the email was opened."
+    return "open", "Loaded directly by a mail app."
 
 
-def hit_via(ua: str | None) -> str:
-    return "gmail_proxy" if "GoogleImageProxy" in (ua or "") else "direct"
+def classify_hit(ts: float, ua: str | None, sent_at: float | None, suppressions: list[float], cfg: Settings) -> str:
+    return explain_hit(ts, ua, sent_at, suppressions, cfg)[0]
+
+
+def _is_google_ip(ip: str | None) -> bool:
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in GOOGLE_PROXY_NETS)
+
+
+def hit_via(ua: str | None, ip: str | None = None) -> str:
+    ua = ua or ""
+    if any(m in ua for m in GMAIL_PROXY_UA_MARKERS) or _is_google_ip(ip):
+        return "gmail_proxy"
+    return "direct"
 
 
 def status_of(summary: dict) -> str:
@@ -183,18 +216,21 @@ class Store:
 
     # ---- loading -------------------------------------------------------
 
-    def _emails(self, campaign: str | None = None, q: str | None = None) -> list[sqlite3.Row]:
-        sql = "SELECT id, subject, recipients, sent_at, campaign FROM emails"
+    def _emails(self, campaign: str | None = None, q: str | None = None, sender: str | None = None) -> list[sqlite3.Row]:
+        sql = "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails"
         where, params = [], []
         if campaign == NO_CAMPAIGN:
             where.append("(campaign IS NULL OR campaign = '')")
         elif campaign:
             where.append("campaign = ?")
             params.append(campaign)
+        if sender:
+            where.append("lower(sender) = lower(?)")
+            params.append(sender)
         if q:
-            where.append("(subject LIKE ? OR recipients LIKE ? OR campaign LIKE ?)")
+            where.append("(subject LIKE ? OR recipients LIKE ? OR campaign LIKE ? OR sender LIKE ?)")
             like = f"%{q}%"
-            params += [like, like, like]
+            params += [like, like, like, like]
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY sent_at DESC"
@@ -220,15 +256,9 @@ class Store:
     def _classified(self, email: sqlite3.Row, hits: list[sqlite3.Row], supps: list[float]) -> list[dict]:
         out = []
         for h in hits:
-            out.append(
-                {
-                    "ts": h["ts"],
-                    "ip": h["ip"],
-                    "ua": h["ua"],
-                    "kind": classify_hit(h["ts"], h["ua"], email["sent_at"], supps, self.cfg),
-                    "via": hit_via(h["ua"]),
-                }
-            )
+            via = hit_via(h["ua"], h["ip"])
+            kind, reason = explain_hit(h["ts"], h["ua"], email["sent_at"], supps, self.cfg, via)
+            out.append({"ts": h["ts"], "ip": h["ip"], "ua": h["ua"], "kind": kind, "via": via, "reason": reason})
         return out
 
     @staticmethod
@@ -240,6 +270,7 @@ class Store:
             "recipients": json.loads(email["recipients"] or "[]"),
             "sent_at": email["sent_at"],
             "campaign": email["campaign"] or None,
+            "sender": email["sender"] or None,
             "opens": len(opens),
             "first_open": min(opens) if opens else None,
             "last_open": max(opens) if opens else None,
@@ -249,8 +280,10 @@ class Store:
         summary["status"] = status_of(summary)
         return summary
 
-    def summaries(self, campaign: str | None = None, q: str | None = None) -> list[tuple[dict, list[dict]]]:
-        emails = self._emails(campaign, q)
+    def summaries(
+        self, campaign: str | None = None, q: str | None = None, sender: str | None = None
+    ) -> list[tuple[dict, list[dict]]]:
+        emails = self._emails(campaign, q, sender)
         hits, supps = self._hits_and_supps([e["id"] for e in emails])
         result = []
         for e in emails:
@@ -259,7 +292,7 @@ class Store:
         return result
 
     def one(self, email_id: str) -> dict | None:
-        rows = self.db.query("SELECT id, subject, recipients, sent_at, campaign FROM emails WHERE id = ?", (email_id,))
+        rows = self.db.query("SELECT id, subject, recipients, sent_at, campaign, sender FROM emails WHERE id = ?", (email_id,))
         if not rows:
             return None
         e = rows[0]
@@ -290,6 +323,7 @@ class EmailIn(BaseModel):
     recipients: list[str] = Field(default_factory=list, max_length=500)
     age: float = Field(default=0, ge=0, le=MAX_AGE_SECONDS)
     campaign: str | None = Field(default=None, max_length=200)
+    sender: str | None = Field(default=None, max_length=320)
 
     @field_validator("id")
     @classmethod
@@ -308,6 +342,12 @@ class EmailIn(BaseModel):
     @classmethod
     def _campaign(cls, v: str | None) -> str | None:
         return _clean_campaign(v)
+
+    @field_validator("sender")
+    @classmethod
+    def _sender(cls, v: str | None) -> str | None:
+        v = (v or "").strip().lower()
+        return v if "@" in v and " " not in v else None
 
 
 class EmailPatch(BaseModel):
@@ -484,10 +524,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         # Upsert: a retried registration carries the same data; a re-send after a
         # failed or undone send updates the record to the real send.
         db.execute(
-            """INSERT INTO emails(id, subject, recipients, sent_at, campaign) VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender) VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET subject=excluded.subject, recipients=excluded.recipients,
-               sent_at=excluded.sent_at, campaign=COALESCE(excluded.campaign, emails.campaign)""",
-            (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign),
+               sent_at=excluded.sent_at, campaign=COALESCE(excluded.campaign, emails.campaign),
+               sender=COALESCE(excluded.sender, emails.sender)""",
+            (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign, body.sender),
         )
         return {"ok": True, "id": body.id, "sent_at": sent_at}
 
@@ -507,8 +548,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         campaign: str | None = Query(None, max_length=200),
         q: str | None = Query(None, max_length=200),
         status: str | None = Query(None, pattern="^(opened|not_opened|prefetch_only)$"),
+        sender: str | None = Query(None, max_length=320),
     ):
-        items = [s for s, _ in store.summaries(campaign, q)]
+        items = [s for s, _ in store.summaries(campaign, q, sender)]
         if status:
             items = [s for s in items if s["status"] == status]
         response.headers["X-Total-Count"] = str(len(items))
@@ -568,6 +610,14 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         out.sort(key=lambda c: c["last_sent"], reverse=True)
         return out
 
+    @app.get("/api/senders", dependencies=auth)
+    def senders():
+        rows = db.query(
+            "SELECT lower(sender) AS s, COUNT(*) AS n, MAX(sent_at) AS last FROM emails "
+            "WHERE sender IS NOT NULL AND sender != '' GROUP BY lower(sender) ORDER BY last DESC"
+        )
+        return [{"sender": r["s"], "emails": r["n"], "last_sent": r["last"]} for r in rows]
+
     @app.patch("/api/campaigns/{name}", dependencies=auth)
     def rename_campaign(name: str, body: CampaignRename):
         if name == NO_CAMPAIGN:
@@ -579,10 +629,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     @app.get("/api/stats", dependencies=auth)
     def stats(
         campaign: str | None = Query(None, max_length=200),
+        sender: str | None = Query(None, max_length=320),
         days: int = Query(30, ge=1, le=365),
         tz: int = Query(0, ge=-14 * 60, le=14 * 60, description="minutes east of UTC"),
     ):
-        pairs = store.summaries(campaign)
+        pairs = store.summaries(campaign, sender=sender)
         items = [s for s, _ in pairs]
         now = time.time()
         today = datetime.fromtimestamp(now + tz * 60, tz=timezone.utc).date()
@@ -608,6 +659,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
                         "email_id": s["id"],
                         "subject": s["subject"],
                         "campaign": s["campaign"],
+                        "sender": s["sender"],
                         "recipients": s["recipients"],
                         "ts": h["ts"],
                         "via": h["via"],

@@ -1,8 +1,11 @@
 /** Background service worker: registration queue, suppress pings, DNR rules. */
 import { backoffMs, dnrRules, MAX_RETRY_MS, normalizeServerUrl, UUID4_RE } from "./lib";
-import { ApiError, apiFetch, getSettings, type ContentConfig, type Message, type QueueItem } from "./shared";
+import { ApiError, apiFetch, getSettings, saveSettings, type ContentConfig, type Message, type QueueItem } from "./shared";
 
 const QUEUE_KEY = "queue";
+const SENDERS_KEY = "senders";
+const CAMPAIGN_CACHE_KEY = "campaignCache";
+const CAMPAIGN_CACHE_MS = 60_000;
 const FLUSH_ALARM = "likelyread-flush";
 
 async function getQueue(): Promise<QueueItem[]> {
@@ -52,6 +55,7 @@ function flush(): Promise<void> {
             subject: email.subject,
             recipients: email.recipients,
             campaign: email.campaign,
+            sender: email.sender ?? null,
             age: Math.max(0, (now - email.sentAtMs) / 1000),
           }),
         });
@@ -78,17 +82,45 @@ async function suppress(id: string): Promise<void> {
   try {
     await apiFetch(settings, `/api/emails/${id}/suppress`, { method: "POST" });
   } catch {
-    // Best effort: the DNR block is the first layer.
+    // Best effort: the server's grace window still covers the compose preview.
+  }
+}
+
+async function rememberSender(sender: string | null | undefined): Promise<void> {
+  if (!sender) return;
+  const { [SENDERS_KEY]: list } = await chrome.storage.local.get(SENDERS_KEY);
+  const prev = Array.isArray(list) ? (list as string[]) : [];
+  if (prev[0] === sender) return;
+  await chrome.storage.local.set({ [SENDERS_KEY]: [sender, ...prev.filter((s) => s !== sender)].slice(0, 20) });
+}
+
+/** Campaign names for the compose picker, cached for a minute. */
+async function campaignNames(): Promise<string[]> {
+  const settings = await getSettings();
+  if (!settings.serverUrl || !settings.token) return [];
+  const { [CAMPAIGN_CACHE_KEY]: cache } = await chrome.storage.local.get(CAMPAIGN_CACHE_KEY);
+  const c = cache as { at: number; names: string[] } | undefined;
+  if (c && Date.now() - c.at < CAMPAIGN_CACHE_MS) return c.names;
+  try {
+    const rows = await apiFetch<{ name: string | null }[]>(settings, "/api/campaigns");
+    const names = rows.map((r) => r.name).filter((n): n is string => !!n).slice(0, 30);
+    await chrome.storage.local.set({ [CAMPAIGN_CACHE_KEY]: { at: Date.now(), names } });
+    return names;
+  } catch {
+    return c?.names ?? [];
   }
 }
 
 async function contentConfig(): Promise<ContentConfig> {
   const s = await getSettings();
+  const { [SENDERS_KEY]: senders } = await chrome.storage.local.get(SENDERS_KEY);
   return {
     configured: !!(s.serverUrl && s.token),
     serverUrl: s.serverUrl,
     trackByDefault: s.trackByDefault,
     campaign: s.campaign,
+    campaigns: await campaignNames(),
+    senders: Array.isArray(senders) ? (senders as string[]) : [],
   };
 }
 
@@ -111,7 +143,15 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse) => {
   if (msg.type === "register") {
     const email = msg.email;
     if (!UUID4_RE.test(email.id)) return false;
-    enqueue({ email, attempts: 0, nextAt: 0 }).then(flush).then(() => sendResponse({ ok: true }));
+    enqueue({ email, attempts: 0, nextAt: 0 })
+      .then(() => rememberSender(email.sender))
+      .then(flush)
+      .then(() => chrome.storage.local.remove(CAMPAIGN_CACHE_KEY))
+      .then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "setCampaign") {
+    saveSettings({ campaign: (msg.campaign || "").slice(0, 100) }).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (msg.type === "suppress") {
@@ -128,7 +168,10 @@ chrome.alarms.onAlarm.addListener((a) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   if (changes.serverUrl) void syncBlockRules();
-  if (changes.serverUrl || changes.token) void flush();
+  if (changes.serverUrl || changes.token) {
+    void chrome.storage.local.remove(CAMPAIGN_CACHE_KEY);
+    void flush();
+  }
 });
 
 function boot(): void {

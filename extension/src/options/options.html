@@ -2,21 +2,23 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>likelyread options</title>
+  <title>Likelyread options</title>
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="options.css">
   <script src="options.js" defer></script>
 </head>
 <body>
   <main>
-    <h1>likelyread</h1>
-    <p class="muted">Connect the extension to your self-hosted likelyread server.</p>
+    <p class="wordmark">likelyread</p>
+    <h1>Connect your server</h1>
+    <p class="lead">The address of your Likelyread server and its token, <code>LIKELYREAD_TOKEN</code> in your <code>.env</code>.</p>
     <form id="form">
-      <label for="serverUrl">Server URL</label>
+      <label for="serverUrl">Server address</label>
       <input id="serverUrl" placeholder="https://t.example.com" required>
       <label for="token">Token</label>
-      <input id="token" type="password" placeholder="LIKELYREAD_TOKEN from your server .env" required>
+      <input id="token" type="password" placeholder="Paste the token" required>
       <label class="check"><input id="trackByDefault" type="checkbox"> Track new emails by default</label>
-      <label for="campaign">Campaign for new tracked emails (optional)</label>
+      <label for="campaign">Campaign for new emails (optional)</label>
       <input id="campaign" placeholder="e.g. Q4 outreach" maxlength="100">
       <div class="actions">
         <button type="submit" class="primary">Save</button>

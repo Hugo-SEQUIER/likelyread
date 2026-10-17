@@ -40,9 +40,10 @@ const options = {
 
 cpSync("manifest.json", "dist/manifest.json");
 cpSync("icons", "dist/icons", { recursive: true });
-for (const f of ["popup/popup.html", "popup/popup.css", "options/options.html", "options/options.css"]) {
-  cpSync(`src/${f}`, `dist/${f.split("/")[1]}`);
+for (const f of ["popup/popup.html", "popup/popup.css", "options/options.html", "options/options.css", "content.css", "ui/fonts.css"]) {
+  cpSync(`src/${f}`, `dist/${f.split("/").pop()}`);
 }
+cpSync("src/ui/fonts", "dist/fonts", { recursive: true });
 
 if (watch) {
   const ctx = await esbuild.context(options);

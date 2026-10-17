@@ -1,0 +1,24 @@
+/* Likelyread controls inside Gmail. Injected through the manifest, so Gmail's CSP does not apply.
+   Brand: ink #0a0a0a, signal red #d92b21, tone #f2f2f2. Gmail's own font is kept so it feels native. */
+
+.lr-control { display: inline-flex; align-items: center; gap: 2px; margin-left: 8px; height: 36px; vertical-align: middle; font-family: inherit; }
+.lr-eye { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 4px; color: #80868b; cursor: pointer; user-select: none; transition: background-color 150ms ease, color 150ms ease; }
+.lr-control.is-on .lr-eye { color: #d92b21; }
+.lr-control.is-unconfigured .lr-eye { color: #bdc1c6; }
+.lr-eye:hover { background: #f2f2f2; }
+.lr-eye:focus-visible, .lr-campaign:focus-visible { outline: 2px solid #d92b21; outline-offset: 1px; }
+.lr-campaign { display: inline-flex; align-items: center; max-width: 150px; height: 28px; padding: 0 22px 0 10px; border-radius: 4px; background: #f2f2f2 no-repeat right 7px center / 9px 6px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 9 6'%3E%3Cpath d='M0 0h9L4.5 6z' fill='%230a0a0a'/%3E%3C/svg%3E"); color: #0a0a0a; font-size: 13px; font-weight: 500; line-height: 28px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; user-select: none; transition: background-color 150ms ease; }
+.lr-campaign.is-empty { color: #5f6368; font-weight: 400; }
+.lr-campaign:hover { background-color: #e4e4e4; }
+.lr-campaign[hidden] { display: none; }
+
+.lr-pop { position: fixed; z-index: 2147483000; width: 264px; padding: 14px; background: #ffffff; color: #0a0a0a; border-radius: 6px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.12); font: 14px/1.4 "Google Sans", Roboto, system-ui, sans-serif; }
+.lr-pop-title { margin: 0 0 8px; font-size: 13px; color: #5f6368; }
+.lr-pop-list { display: grid; gap: 2px; max-height: 220px; overflow-y: auto; margin-bottom: 10px; }
+.lr-opt { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 10px; border: 0; border-radius: 4px; background: transparent; color: #0a0a0a; font: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lr-opt::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: #d0d0d0; }
+.lr-opt[aria-checked="true"] { background: #f2f2f2; font-weight: 500; }
+.lr-opt[aria-checked="true"]::before { background: #d92b21; }
+.lr-opt:hover, .lr-opt:focus-visible { background: #f2f2f2; outline: none; }
+.lr-new { box-sizing: border-box; width: 100%; height: 36px; padding: 0 10px; border: 0; border-radius: 4px; background: #f2f2f2; color: #0a0a0a; font: inherit; }
+.lr-new:focus { outline: 2px solid #d92b21; outline-offset: 0; background: #ffffff; }

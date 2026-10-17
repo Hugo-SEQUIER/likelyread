@@ -65,18 +65,21 @@ git pull && cd deploy && docker compose up -d --build
 
 A campaign is just a label on an email.
 
-- **Before sending:** set the **active campaign** in the extension popup (or options). Every email you track while it is set gets that label. Clear the field to stop labelling.
+- **While writing:** click the campaign name next to the red eye under Gmail's Send button and pick one, or type a new one. Your pick becomes the default for the next emails. The popup and options page set the same default.
 - **After sending:** change an email's campaign from its detail page in the dashboard, or rename a whole campaign from the Campaigns tab.
 
 The dashboard (`https://your-domain/`) has:
 
 - **Overview:** tracked emails, open rate, total opens, opens in the last 7 days, median time to first open, a 30-day sent vs opens chart, opens by hour of day (useful to pick a send time), and the latest opens.
 - **Campaigns:** open rate, opens and time to first open per campaign, side by side.
-- **Emails:** search by subject, recipient or campaign, filter by status, and open any email to see every hit with its time, kind, user agent and IP.
+- **Emails:** search by subject, recipient or campaign, filter by status, and open any email to see every hit with its time, verdict, the reason for that verdict, user agent and IP.
+- **From address:** each email records the address it was sent from (your account or a send-as alias). When you use more than one, the dashboard shows a From column and an address filter.
 
 Open rate means *emails with at least one open / tracked emails*. Apple prefetches and your own views are never counted.
 
-![Campaigns](docs/screenshots/campaigns.png)
+![Email detail](docs/screenshots/email-detail.png)
+
+![Campaign picker in Gmail compose](docs/screenshots/compose-picker.png)
 
 The dashboard is a static page with no data of its own: it reads the authenticated API with your token. Set `DASHBOARD=false` to turn it off.
 
@@ -108,7 +111,7 @@ An "open" means *probably opened*, never proof.
 | One pixel per email | With several recipients you can't tell who opened it. |
 | Forwarding | Opens by people the email was forwarded to count as opens. |
 | Gmail DOM changes | Can break injection. All Gmail selectors live in `extension/src/gmail-selectors.ts`, and failures are safe: the email is sent untracked. |
-| Self-view blocking through the Gmail proxy | The extension blocks your own browser from loading your pixel. For Gmail-proxied URLs this depends on Chrome matching the URL fragment, which is not guaranteed, so the suppress ping (and the 60 s window) is the reliable layer. |
+| Self-views | The extension blocks your own browser from loading your pixel directly, and when you open a message **you sent** in Gmail it tells the server, so the next 60 s count as self. Messages you received are never suppressed, so a recipient opening your email in this same browser still counts. |
 | Deliverability | A fresh domain plus hidden images can raise spam scores. Use HTTPS and a domain with some history. |
 
 ## Privacy and legal

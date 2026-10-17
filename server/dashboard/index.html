@@ -4,16 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>likelyread dashboard</title>
-  <link rel="icon" href="data:,">
+  <title>Likelyread</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="/assets/bricolage-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/assets/fonts.css">
   <link rel="stylesheet" href="/assets/style.css">
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
   <div id="login" class="login" hidden>
     <form id="login-form" class="login-card">
-      <div class="brand"><span class="logo" aria-hidden="true"></span>likelyread</div>
-      <p class="muted">Enter the server token (<code>LIKELYREAD_TOKEN</code>) to open the dashboard.</p>
+      <p class="wordmark">likelyread</p>
+      <h1 class="login-title">Your read receipts</h1>
+      <p class="muted">Sign in with the server token, <code>LIKELYREAD_TOKEN</code> in your <code>.env</code>.</p>
       <label for="token-input">Token</label>
       <input id="token-input" type="password" autocomplete="current-password" required>
       <label class="check"><input id="remember" type="checkbox"> Remember on this device</label>
@@ -24,7 +27,7 @@
 
   <div id="shell" hidden>
     <header class="topbar">
-      <div class="brand"><span class="logo" aria-hidden="true"></span>likelyread</div>
+      <a class="wordmark" href="#/overview">likelyread</a>
       <nav class="tabs" aria-label="Sections">
         <a href="#/overview" data-tab="overview">Overview</a>
         <a href="#/campaigns" data-tab="campaigns">Campaigns</a>
@@ -33,12 +36,14 @@
       <div class="topbar-right">
         <label class="sr-only" for="campaign-filter">Campaign</label>
         <select id="campaign-filter" title="Filter by campaign"></select>
-        <button id="refresh" class="btn ghost" title="Refresh">Refresh</button>
-        <button id="logout" class="btn ghost" title="Sign out">Sign out</button>
+        <label class="sr-only" for="sender-filter">From</label>
+        <select id="sender-filter" title="Filter by the address you sent from"></select>
+        <button id="refresh" class="btn ghost" type="button">Refresh</button>
+        <button id="logout" class="btn ghost" type="button">Sign out</button>
       </div>
     </header>
     <main id="view" class="view" aria-live="polite"></main>
-    <footer class="foot muted">An "open" means the email was probably opened, never proof. Gmail caches images, so repeat opens may not register; Apple Mail prefetches images on delivery.</footer>
+    <footer class="foot">An open means the email was probably read, never proof. Gmail caches images, so repeat opens may not register. Apple Mail loads images on delivery; those hits are marked as prefetch and never counted.</footer>
   </div>
 </body>
 </html>

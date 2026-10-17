@@ -58,27 +58,19 @@ export function cleanRecipients(values: Iterable<string>): string[] {
   return [...out];
 }
 
-/** Gmail DNR rules for blocking self-views of the pixel. */
+/**
+ * Block this browser from loading its own pixel directly (the compose preview).
+ * Gmail-proxied loads are deliberately NOT blocked: the same browser may be the
+ * recipient's (another account, a test), and blocking there hides real opens.
+ * Your own views of sent mail are handled by the suppress ping instead.
+ */
 export function dnrRules(server: string): chrome.declarativeNetRequest.Rule[] {
-  const host = new URL(server).host;
-  const block = { type: "block" } as chrome.declarativeNetRequest.RuleAction;
   return [
     {
       id: 1,
       priority: 1,
-      action: block,
+      action: { type: "block" } as chrome.declarativeNetRequest.RuleAction,
       condition: { urlFilter: `|${server}/p/`, resourceTypes: ["image" as chrome.declarativeNetRequest.ResourceType] },
-    },
-    {
-      // Gmail proxy URLs keep the original URL after '#'. Whether Chrome matches
-      // the fragment is not guaranteed; the suppress ping covers the gap.
-      id: 2,
-      priority: 1,
-      action: block,
-      condition: {
-        regexFilter: `^https://[a-z0-9-]+\\.googleusercontent\\.com/.*#https?://${escapeRe(host)}/p/`,
-        resourceTypes: ["image" as chrome.declarativeNetRequest.ResourceType],
-      },
     },
   ];
 }

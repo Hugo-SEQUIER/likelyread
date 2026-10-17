@@ -2,21 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <link rel="stylesheet" href="fonts.css">
   <link rel="stylesheet" href="popup.css">
   <script src="popup.js" defer></script>
 </head>
 <body>
   <header>
-    <div class="brand"><span class="logo"></span>likelyread</div>
+    <span class="wordmark">likelyread</span>
     <a id="dashboard" href="#" target="_blank" rel="noopener">Dashboard</a>
   </header>
   <section class="campaign">
-    <label for="campaign">Campaign for new tracked emails</label>
-    <div class="row">
-      <input id="campaign" list="campaign-list" placeholder="None" maxlength="100">
-      <datalist id="campaign-list"></datalist>
-    </div>
+    <label for="campaign">Campaign for new emails</label>
+    <input id="campaign" list="campaign-list" placeholder="No campaign" maxlength="100">
+    <datalist id="campaign-list"></datalist>
+    <p class="hint">You can also pick it in Gmail, next to the eye.</p>
   </section>
-  <main id="list"><p class="muted">Loading...</p></main>
+  <main id="list"><p class="note">Loading…</p></main>
 </body>
 </html>

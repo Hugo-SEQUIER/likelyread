@@ -34,10 +34,8 @@ test("cleanRecipients dedupes and parses names", () => {
   assert.deepEqual(cleanRecipients(["Ann <Ann@X.com>, bob@y.io", "bob@y.io", "", "not an email"]), ["ann@x.com", "bob@y.io"]);
 });
 
-test("dnrRules block the direct pixel and the proxied form", () => {
+test("dnrRules block only the direct pixel, never Gmail's proxied copy", () => {
   const rules = dnrRules("https://t.example.com");
+  assert.equal(rules.length, 1, "blocking the proxy would hide real opens in this browser");
   assert.equal(rules[0].condition.urlFilter, "|https://t.example.com/p/");
-  const re = new RegExp(rules[1].condition.regexFilter!);
-  assert.ok(re.test(`https://ci3.googleusercontent.com/meips/abc#https://t.example.com/p/${ID}.gif`));
-  assert.ok(!re.test(`https://ci3.googleusercontent.com/meips/abc#https://other.com/p/${ID}.gif`));
 });

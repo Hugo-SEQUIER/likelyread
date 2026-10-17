@@ -10,6 +10,7 @@ export interface PendingEmail {
   subject: string;
   recipients: string[];
   campaign: string | null;
+  sender: string | null;
   sentAtMs: number;
 }
 
@@ -24,12 +25,18 @@ export interface ContentConfig {
   configured: boolean;
   serverUrl: string;
   trackByDefault: boolean;
+  /** The current campaign: default for new compose windows. */
   campaign: string;
+  /** Existing campaign names, most recent first, for the compose picker. */
+  campaigns: string[];
+  /** Addresses this browser has sent tracked email from. */
+  senders: string[];
 }
 
 export type Message =
   | { type: "register"; email: PendingEmail }
   | { type: "suppress"; id: string }
+  | { type: "setCampaign"; campaign: string }
   | { type: "getConfig" };
 
 export const DEFAULT_SETTINGS: Settings = { serverUrl: "", token: "", trackByDefault: true, campaign: "" };
@@ -49,6 +56,7 @@ export interface EmailSummary {
   recipients: string[];
   sent_at: number;
   campaign: string | null;
+  sender: string | null;
   opens: number;
   first_open: number | null;
   last_open: number | null;
