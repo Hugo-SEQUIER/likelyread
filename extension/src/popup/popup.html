@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="logo"></span>mailpeek</div>
+    <a id="dashboard" href="#" target="_blank" rel="noopener">Dashboard</a>
+  </header>
+  <section class="campaign">
+    <label for="campaign">Campaign for new tracked emails</label>
+    <div class="row">
+      <input id="campaign" list="campaign-list" placeholder="None" maxlength="100">
+      <datalist id="campaign-list"></datalist>
+    </div>
+  </section>
+  <main id="list"><p class="muted">Loading...</p></main>
+</body>
+</html>

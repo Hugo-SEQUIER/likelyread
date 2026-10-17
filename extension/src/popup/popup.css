@@ -1,0 +1,27 @@
+body { width: 380px; margin: 0; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1f2329; background: #fff; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-bottom: 1px solid #eceef2; }
+.brand { display: flex; gap: 8px; align-items: center; font-weight: 700; font-size: 15px; }
+.logo { width: 16px; height: 16px; border-radius: 50%; background: radial-gradient(circle, #fff 0 3px, #5b6cff 4px 100%); }
+a { color: #3f51e8; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.campaign { padding: 10px 14px; border-bottom: 1px solid #eceef2; background: #fafbfc; }
+.campaign label { display: block; font-size: 11px; color: #6b7280; margin-bottom: 4px; }
+.campaign input { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #d7dbe2; border-radius: 6px; font: inherit; }
+main { max-height: 460px; overflow-y: auto; }
+.item { padding: 10px 14px; border-bottom: 1px solid #f0f1f4; cursor: pointer; }
+.item:hover { background: #f7f8fa; }
+.item.greyed { opacity: .6; }
+.top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.subject { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta { color: #6b7280; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.chip { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 99px; background: #f0f1f4; color: #4b5563; white-space: nowrap; }
+.chip.ok { background: #e6f7ef; color: #13795b; }
+.chip.dim { background: #f3f4f6; color: #9ca3af; }
+.chip small { opacity: .8; }
+.hits { margin-top: 8px; display: grid; gap: 4px; font-size: 11px; color: #4b5563; cursor: default; }
+.hit { display: grid; grid-template-columns: 56px 1fr auto; gap: 2px 8px; padding: 6px 8px; border-radius: 6px; background: #f7f8fa; }
+.hit.self, .hit.prefetch { opacity: .6; }
+.hit .kind { font-weight: 600; }
+.hit .ua { grid-column: 1 / -1; color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muted { color: #6b7280; padding: 14px; margin: 0; }
+.error { color: #c62828; padding: 14px; margin: 0; }

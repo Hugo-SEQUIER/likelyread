@@ -1,0 +1,29 @@
+services:
+  server:
+    build: ../server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/mailpeek.db
+    volumes:
+      - ./data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - server
+    env_file: .env
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

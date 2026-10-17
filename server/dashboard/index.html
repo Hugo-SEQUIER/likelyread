@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>mailpeek dashboard</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-card">
+      <div class="brand"><span class="logo" aria-hidden="true"></span>mailpeek</div>
+      <p class="muted">Enter the server token (<code>MAILPEEK_TOKEN</code>) to open the dashboard.</p>
+      <label for="token-input">Token</label>
+      <input id="token-input" type="password" autocomplete="current-password" required>
+      <label class="check"><input id="remember" type="checkbox"> Remember on this device</label>
+      <button type="submit" class="btn primary">Open dashboard</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </div>
+
+  <div id="shell" hidden>
+    <header class="topbar">
+      <div class="brand"><span class="logo" aria-hidden="true"></span>mailpeek</div>
+      <nav class="tabs" aria-label="Sections">
+        <a href="#/overview" data-tab="overview">Overview</a>
+        <a href="#/campaigns" data-tab="campaigns">Campaigns</a>
+        <a href="#/emails" data-tab="emails">Emails</a>
+      </nav>
+      <div class="topbar-right">
+        <label class="sr-only" for="campaign-filter">Campaign</label>
+        <select id="campaign-filter" title="Filter by campaign"></select>
+        <button id="refresh" class="btn ghost" title="Refresh">Refresh</button>
+        <button id="logout" class="btn ghost" title="Sign out">Sign out</button>
+      </div>
+    </header>
+    <main id="view" class="view" aria-live="polite"></main>
+    <footer class="foot muted">An "open" means the email was probably opened, never proof. Gmail caches images, so repeat opens may not register; Apple Mail prefetches images on delivery.</footer>
+  </div>
+</body>
+</html>
