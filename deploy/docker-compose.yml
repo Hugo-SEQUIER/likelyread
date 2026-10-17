@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DB_PATH: /data/mailpeek.db
+      DB_PATH: /data/likelyread.db
       # Trust X-Forwarded-For only from private (Docker) addresses, where Caddy
       # is the only peer. Never publish port 8000 directly.
       FORWARDED_ALLOW_IPS: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"

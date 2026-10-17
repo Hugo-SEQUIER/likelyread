@@ -1,4 +1,4 @@
-# mailpeek
+# likelyread
 
 Self-hosted, open-source email open tracking for Gmail, for a single user. It tells you whether someone has **probably** opened an email you sent, with no third-party SaaS involved, and gives you a small dashboard to follow your campaigns.
 
@@ -26,10 +26,10 @@ You need a VPS (512 MB is plenty), Docker with the compose plugin, and a (sub)do
 1. Point a DNS record such as `t.example.com` at the VPS.
 2. Configure:
    ```sh
-   git clone https://github.com/Hugo-SEQUIER/Openmailtracker.git mailpeek
-   cd mailpeek/deploy
+   git clone https://github.com/Hugo-SEQUIER/likelyread.git
+   cd likelyread/deploy
    cp .env.example .env
-   # set DOMAIN=t.example.com and MAILPEEK_TOKEN=$(openssl rand -hex 32)
+   # set DOMAIN=t.example.com and LIKELYREAD_TOKEN=$(openssl rand -hex 32)
    ```
 3. Start it:
    ```sh
@@ -49,10 +49,10 @@ You need a VPS (512 MB is plenty), Docker with the compose plugin, and a (sub)do
 
 ### Backups
 
-Everything is in `deploy/data/mailpeek.db`. A safe online copy from cron:
+Everything is in `deploy/data/likelyread.db`. A safe online copy from cron:
 
 ```sh
-sqlite3 /path/to/deploy/data/mailpeek.db ".backup '/backups/mailpeek-$(date +%F).db'"
+sqlite3 /path/to/deploy/data/likelyread.db ".backup '/backups/likelyread-$(date +%F).db'"
 ```
 
 ### Updating
@@ -87,7 +87,7 @@ All settings live in `deploy/.env` (see `.env.example`):
 | Variable | Default | Purpose |
 |---|---|---|
 | `DOMAIN` | | Domain Caddy serves and gets a certificate for. |
-| `MAILPEEK_TOKEN` | required | Bearer token for the API, the dashboard and the extension. The server refuses to start without it. |
+| `LIKELYREAD_TOKEN` | required | Bearer token for the API, the dashboard and the extension. The server refuses to start without it. |
 | `ALLOWED_ORIGINS` | empty | Optional CORS origin for the extension (`chrome-extension://<id>`). Not needed for the extension to work. |
 | `GRACE_SECONDS` | `20` | Hits this close to the send time count as your compose preview. |
 | `SUPPRESS_WINDOW_SECONDS` | `60` | Hits within this window after you open your own sent email count as you. |
@@ -125,7 +125,7 @@ cd server
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt
 pytest -q
-MAILPEEK_TOKEN=devtoken0123456789 DB_PATH=./dev.db uvicorn app:create_app --factory --reload
+LIKELYREAD_TOKEN=devtoken0123456789 DB_PATH=./dev.db uvicorn app:create_app --factory --reload
 
 # demo data for the dashboard (never on your real database)
 python scripts/seed_demo.py ./demo.db

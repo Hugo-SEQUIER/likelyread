@@ -1,4 +1,4 @@
-"""mailpeek server: self-hosted email open tracking for a single Gmail user.
+"""likelyread server: self-hosted email open tracking for a single Gmail user.
 
 One process, one SQLite file, one bearer token. See SPEC.md for the contract.
 """
@@ -44,8 +44,8 @@ def _env_float(name: str, default: float) -> float:
 
 class Settings:
     def __init__(self) -> None:
-        self.token = os.environ.get("MAILPEEK_TOKEN", "")
-        self.db_path = os.environ.get("DB_PATH", "/data/mailpeek.db")
+        self.token = os.environ.get("LIKELYREAD_TOKEN", "")
+        self.db_path = os.environ.get("DB_PATH", "/data/likelyread.db")
         self.grace_seconds = _env_float("GRACE_SECONDS", 20)
         self.suppress_window_seconds = _env_float("SUPPRESS_WINDOW_SECONDS", 60)
         self.store_ip = _env_bool("STORE_IP", True)
@@ -56,9 +56,9 @@ class Settings:
         self.dashboard = _env_bool("DASHBOARD", True)
         self.pixel_rate_per_min = int(_env_float("PIXEL_RATE_PER_MIN", 60))
         if not self.token:
-            raise RuntimeError("MAILPEEK_TOKEN is required. Generate one with: openssl rand -hex 32")
+            raise RuntimeError("LIKELYREAD_TOKEN is required. Generate one with: openssl rand -hex 32")
         if len(self.token) < 16:
-            raise RuntimeError("MAILPEEK_TOKEN is too short (minimum 16 characters).")
+            raise RuntimeError("LIKELYREAD_TOKEN is too short (minimum 16 characters).")
 
 
 # 43-byte transparent 1x1 GIF.
@@ -663,4 +663,4 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
 
 # Run with: uvicorn app:create_app --factory
-# create_app() raises when MAILPEEK_TOKEN is missing, so the server refuses to start.
+# create_app() raises when LIKELYREAD_TOKEN is missing, so the server refuses to start.

@@ -29,7 +29,7 @@ async function main(): Promise<void> {
     const link = h("a", null, "Open options");
     link.href = "#";
     link.addEventListener("click", () => chrome.runtime.openOptionsPage());
-    list.replaceChildren(h("p", "muted", "mailpeek is not set up yet. ", link));
+    list.replaceChildren(h("p", "muted", "likelyread is not set up yet. ", link));
     return;
   }
   dash.href = `${settings.serverUrl}/`;

@@ -17,8 +17,8 @@ export interface ComposeDeps {
   now(): number;
 }
 
-const ENHANCED = "mailpeekEnhanced";
-const TOGGLE_CLASS = "mailpeek-toggle";
+const ENHANCED = "likelyreadEnhanced";
+const TOGGLE_CLASS = "likelyread-toggle";
 
 interface ComposeState {
   root: HTMLElement;
@@ -128,10 +128,10 @@ export class ComposeTracker {
     t.setAttribute("aria-pressed", String(state.enabled));
     const campaign = cfg.campaign ? ` (campaign: ${cfg.campaign})` : "";
     const label = !cfg.configured
-      ? "mailpeek is not configured: open the extension options"
+      ? "likelyread is not configured: open the extension options"
       : state.enabled
-        ? `mailpeek: tracking ON${campaign}. Click to turn off.`
-        : "mailpeek: tracking OFF. Click to turn on.";
+        ? `likelyread: tracking ON${campaign}. Click to turn off.`
+        : "likelyread: tracking OFF. Click to turn on.";
     t.title = label;
     t.setAttribute("aria-label", label);
   }
@@ -257,7 +257,7 @@ export class ComposeTracker {
     try {
       fn();
     } catch (err) {
-      console.warn("[mailpeek] ignored error (email sending is unaffected):", err);
+      console.warn("[likelyread] ignored error (email sending is unaffected):", err);
     }
   }
 }

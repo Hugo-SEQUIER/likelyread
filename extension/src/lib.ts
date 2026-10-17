@@ -28,7 +28,7 @@ function escapeRe(s: string): string {
 }
 
 /**
- * Find a mailpeek pixel id in an image URL. Works for direct URLs and for
+ * Find a likelyread pixel id in an image URL. Works for direct URLs and for
  * Gmail proxy URLs that keep the original after a `#`.
  */
 export function extractPixelId(src: string, server: string): string | null {

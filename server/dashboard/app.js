@@ -1,8 +1,8 @@
-/* mailpeek dashboard. Plain JS, no dependencies. All data comes from the
+/* likelyread dashboard. Plain JS, no dependencies. All data comes from the
  * authenticated API; the token never leaves this origin. */
 "use strict";
 
-const TOKEN_KEY = "mailpeek.token";
+const TOKEN_KEY = "likelyread.token";
 const NO_CAMPAIGN = "__none__";
 const state = { token: null, campaign: "", campaigns: [] };
 
@@ -347,7 +347,7 @@ async function viewEmail(root, id) {
 function emptyState() {
   return h("section", { class: "card empty-state" },
     h("h2", {}, "Nothing tracked yet"),
-    h("p", { class: "muted" }, "Install the mailpeek Chrome extension, enter this server URL and token in its options, then send an email from Gmail with tracking on."));
+    h("p", { class: "muted" }, "Install the likelyread Chrome extension, enter this server URL and token in its options, then send an email from Gmail with tracking on."));
 }
 
 // ---------------------------------------------------------------- router

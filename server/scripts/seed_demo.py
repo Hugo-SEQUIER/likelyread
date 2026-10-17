@@ -1,4 +1,4 @@
-"""Fill a mailpeek database with fake data to preview the dashboard.
+"""Fill a likelyread database with fake data to preview the dashboard.
 
 Usage: python seed_demo.py /path/to/demo.db
 Never point this at your real database.

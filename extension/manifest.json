@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "mailpeek",
+  "name": "Likelyread",
   "version": "0.1.0",
   "description": "Self-hosted email open tracking for Gmail. Your data stays on your own server.",
   "permissions": ["storage", "declarativeNetRequest", "alarms"],

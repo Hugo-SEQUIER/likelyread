@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY dashboard ./dashboard
 
-RUN groupadd --system --gid 10001 mailpeek && useradd --system --uid 10001 --gid 10001 mailpeek && mkdir -p /data
+RUN groupadd --system --gid 10001 likelyread && useradd --system --uid 10001 --gid 10001 likelyread && mkdir -p /data
 VOLUME ["/data"]
 EXPOSE 8000
 
@@ -22,4 +22,4 @@ HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
 # listed in FORWARDED_ALLOW_IPS (default: none but localhost). The compose file
 # trusts its private network, where Caddy is the only peer.
 ENV FORWARDED_ALLOW_IPS=127.0.0.1
-CMD ["sh", "-c", "chown -R mailpeek:mailpeek /data && exec setpriv --reuid=10001 --regid=10001 --clear-groups uvicorn app:create_app --factory --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips \"$FORWARDED_ALLOW_IPS\" --no-server-header"]
+CMD ["sh", "-c", "chown -R likelyread:likelyread /data && exec setpriv --reuid=10001 --regid=10001 --clear-groups uvicorn app:create_app --factory --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips \"$FORWARDED_ALLOW_IPS\" --no-server-header"]

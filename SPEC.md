@@ -1,4 +1,4 @@
-# mailpeek: Specification (v0.1)
+# likelyread: Specification (v0.1)
 
 Self-hosted, open-source email open tracking for Gmail, for a single user.
 It tells you whether someone has probably opened an email you sent, with no third-party SaaS involved.
@@ -33,7 +33,7 @@ It tells you whether someone has probably opened an email you sent, with no thir
 ```
 ┌──────────── Chrome (you) ────────────┐          ┌──────── VPS ────────┐
 │ Gmail compose                        │          │ Caddy (TLS)         │
-│  └─ mailpeek extension               │──HTTPS──▶│  └─ mailpeek-server │
+│  └─ likelyread extension               │──HTTPS──▶│  └─ likelyread-server │
 │      • injects <img> on Send         │  /api/*  │      FastAPI        │
 │      • registers email               │          │      SQLite         │
 │      • suppresses self-views         │          └─────────▲───────────┘
@@ -57,8 +57,8 @@ It tells you whether someone has probably opened an email you sent, with no thir
 
 | Var | Default | Purpose |
 |---|---|---|
-| `MAILPEEK_TOKEN` | none (required) | Bearer token for `/api/*`. Server refuses to start without it. |
-| `DB_PATH` | `/data/mailpeek.db` | SQLite file (mounted volume). |
+| `LIKELYREAD_TOKEN` | none (required) | Bearer token for `/api/*`. Server refuses to start without it. |
+| `DB_PATH` | `/data/likelyread.db` | SQLite file (mounted volume). |
 | `GRACE_SECONDS` | `20` | Hits within this window around send time count as self (compose preview). |
 | `SUPPRESS_WINDOW_SECONDS` | `60` | Hits within this window after a suppress ping count as self. |
 | `STORE_IP` | `true` | Set `false` to drop IPs (privacy mode). |
@@ -144,7 +144,7 @@ Classification is computed at read time so the rules can be improved later witho
 
 ### 3.7 Dashboard [added]
 
-Served at `https://{domain}/`. Sign in with `MAILPEEK_TOKEN` (kept for the tab session, or on the device if "Remember" is checked).
+Served at `https://{domain}/`. Sign in with `LIKELYREAD_TOKEN` (kept for the tab session, or on the device if "Remember" is checked).
 
 - **Overview:** tracked emails, opened (open rate), total opens and last 7 days, median time to first open, prefetch-only, filtered self views; a 30-day sent vs opens chart; opens by hour of day (best time to send); recent opens.
 - **Campaigns:** one row per campaign with emails, opened, open rate, opens, time to open, last open, last sent; rename; click through to its emails.
@@ -181,7 +181,7 @@ Open rate = emails with at least one `open` hit / tracked emails. Prefetch-only 
 
 ### 4.4 Self-view suppression (two layers)
 1. **Block**: a `declarativeNetRequest` rule blocks requests from the user's own browser to `{server}/p/*`, and to Google image-proxy URLs that wrap it where they can be matched. *To verify during implementation: whether proxied URLs, `…googleusercontent.com/…#{original}`, can be matched.*
-2. **Suppress ping**: when the user opens a thread in Gmail that contains a mailpeek pixel (detected by scanning the rendered message DOM for the server host), send `POST /api/emails/{id}/suppress` before the image loads, or as soon as possible.
+2. **Suppress ping**: when the user opens a thread in Gmail that contains a likelyread pixel (detected by scanning the rendered message DOM for the server host), send `POST /api/emails/{id}/suppress` before the image loads, or as soon as possible.
 
 The server-side grace window (3.4) covers the compose preview.
 
@@ -202,7 +202,7 @@ The server-side grace window (3.4) covers the compose preview.
 ## 5. Deployment
 
 ```
-mailpeek/
+likelyread/
 ├── server/
 │   ├── app.py
 │   ├── dashboard/          # [added] static dashboard (index.html, app.js, style.css)
@@ -223,10 +223,10 @@ mailpeek/
 
 Setup flow:
 1. Point a (sub)domain at the VPS, e.g. `t.example.com`.
-2. `cd deploy && cp .env.example .env`, then set `DOMAIN` and `MAILPEEK_TOKEN` (`openssl rand -hex 32`).
+2. `cd deploy && cp .env.example .env`, then set `DOMAIN` and `LIKELYREAD_TOKEN` (`openssl rand -hex 32`).
 3. Run `docker compose up -d`.
 4. Load the extension (unpacked, or from the Chrome Web Store later) and enter the URL and token in its options.
-5. Backups: copy `./data/mailpeek.db` (SQLite `.backup` from cron).
+5. Backups: copy `./data/likelyread.db` (SQLite `.backup` from cron).
 
 Requirements: any 512 MB VPS works, since the server is a single process.
 
@@ -264,7 +264,7 @@ Requirements: any 512 MB VPS works, since the server is a single process.
 | v0.2 | Status badges in Gmail's Sent list and thread view; per-email "stop tracking" |
 | v0.3 | Notifications (ntfy / Telegram / webhook), first open only, opt-in |
 | v0.4 | Link click tracking (redirect `/l/{id}/{n}`) |
-| later | Per-recipient pixels (send separate copies), Firefox support, CLI (`mailpeek ls`) |
+| later | Per-recipient pixels (send separate copies), Firefox support, CLI (`likelyread ls`) |
 
 ---
 

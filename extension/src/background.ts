@@ -3,7 +3,7 @@ import { backoffMs, dnrRules, MAX_RETRY_MS, normalizeServerUrl, UUID4_RE } from 
 import { ApiError, apiFetch, getSettings, type ContentConfig, type Message, type QueueItem } from "./shared";
 
 const QUEUE_KEY = "queue";
-const FLUSH_ALARM = "mailpeek-flush";
+const FLUSH_ALARM = "likelyread-flush";
 
 async function getQueue(): Promise<QueueItem[]> {
   const { [QUEUE_KEY]: q } = await chrome.storage.local.get(QUEUE_KEY);

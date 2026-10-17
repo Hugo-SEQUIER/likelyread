@@ -64,7 +64,7 @@ const pixels = (body: HTMLElement) => body.querySelectorAll(`img[src^="${SERVER}
 
 test("adds a toggle next to Send, on by default", () => {
   const { doc } = setup();
-  const toggle = doc.querySelector(".mailpeek-toggle")!;
+  const toggle = doc.querySelector(".likelyread-toggle")!;
   assert.ok(toggle, "toggle injected");
   assert.equal(toggle.getAttribute("aria-pressed"), "true");
   assert.match(toggle.getAttribute("title")!, /campaign: Q4/);
@@ -114,7 +114,7 @@ test("plain Enter in the body does not trigger tracking", () => {
 
 test("toggling off sends untracked", () => {
   const { doc, body, click, registered, win } = setup();
-  doc.querySelector(".mailpeek-toggle")!.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+  doc.querySelector(".likelyread-toggle")!.dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
   click();
   assert.equal(pixels(body).length, 0);
   assert.equal(registered.length, 0);
@@ -158,7 +158,7 @@ test("a compose without a recognisable Send button is left untouched", () => {
     now: () => 0,
   });
   t.scan();
-  assert.equal(dom.window.document.querySelector(".mailpeek-toggle"), null);
+  assert.equal(dom.window.document.querySelector(".likelyread-toggle"), null);
 });
 
 test("viewing our own sent email sends a suppress ping, throttled, but not for the compose pixel", () => {
@@ -202,13 +202,13 @@ test("a quoted pixel does not force tracking on", () => {
     now: () => 0,
   });
   t.scan();
-  assert.equal(dom.window.document.querySelector(".mailpeek-toggle")!.getAttribute("aria-pressed"), "false");
+  assert.equal(dom.window.document.querySelector(".likelyread-toggle")!.getAttribute("aria-pressed"), "false");
 });
 
 test("the toggle comes back if Gmail re-renders the toolbar", () => {
   const { doc, tracker } = setup();
-  doc.querySelector(".mailpeek-toggle")!.closest("td")!.remove();
-  assert.equal(doc.querySelector(".mailpeek-toggle"), null);
+  doc.querySelector(".likelyread-toggle")!.closest("td")!.remove();
+  assert.equal(doc.querySelector(".likelyread-toggle"), null);
   tracker.scan();
-  assert.ok(doc.querySelector(".mailpeek-toggle"));
+  assert.ok(doc.querySelector(".likelyread-toggle"));
 });

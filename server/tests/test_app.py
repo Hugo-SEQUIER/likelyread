@@ -5,7 +5,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-import app as mailpeek
+import app as likelyread
 
 TOKEN = "t" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -16,7 +16,7 @@ DIRECT_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.1
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    monkeypatch.setenv("MAILPEEK_TOKEN", TOKEN)
+    monkeypatch.setenv("LIKELYREAD_TOKEN", TOKEN)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setenv("PIXEL_RATE_PER_MIN", "1000")
     return monkeypatch
@@ -25,13 +25,13 @@ def env(tmp_path, monkeypatch):
 @pytest.fixture
 def clock(monkeypatch):
     state = {"now": 1_800_000_000.0}
-    monkeypatch.setattr(mailpeek.time, "time", lambda: state["now"])
+    monkeypatch.setattr(likelyread.time, "time", lambda: state["now"])
     return state
 
 
 @pytest.fixture
 def client(env, clock):
-    return TestClient(mailpeek.create_app())
+    return TestClient(likelyread.create_app())
 
 
 def new_id() -> str:
@@ -58,10 +58,10 @@ def hit(client, eid, ua=DIRECT_UA):
 
 
 def test_refuses_to_start_without_token(tmp_path, monkeypatch):
-    monkeypatch.delenv("MAILPEEK_TOKEN", raising=False)
+    monkeypatch.delenv("LIKELYREAD_TOKEN", raising=False)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "x.db"))
     with pytest.raises(RuntimeError):
-        mailpeek.create_app()
+        likelyread.create_app()
 
 
 def test_healthz_public(client):
@@ -126,7 +126,7 @@ def test_hits_for_unknown_ids_are_kept_until_registration(client, clock):
 
 def test_store_ip_false(env, clock):
     env.setenv("STORE_IP", "false")
-    c = TestClient(mailpeek.create_app())
+    c = TestClient(likelyread.create_app())
     eid = new_id()
     register(c, eid)
     clock["now"] += 100
@@ -136,7 +136,7 @@ def test_store_ip_false(env, clock):
 
 def test_pixel_rate_limit(env, clock):
     env.setenv("PIXEL_RATE_PER_MIN", "3")
-    c = TestClient(mailpeek.create_app())
+    c = TestClient(likelyread.create_app())
     eid = new_id()
     for _ in range(5):
         hit(c, eid)
@@ -206,14 +206,14 @@ def test_prefetch_only_status(client, clock):
 
 def test_classification_reads_current_config(env, clock):
     """Rules are computed at read time: changing GRACE_SECONDS reclassifies old hits."""
-    c = TestClient(mailpeek.create_app())
+    c = TestClient(likelyread.create_app())
     eid = new_id()
     register(c, eid)
     clock["now"] += 30
     hit(c, eid)
     assert c.get(f"/api/emails/{eid}", headers=AUTH).json()["opens"] == 1
     env.setenv("GRACE_SECONDS", "60")
-    c2 = TestClient(mailpeek.create_app())
+    c2 = TestClient(likelyread.create_app())
     assert c2.get(f"/api/emails/{eid}", headers=AUTH).json()["opens"] == 0
 
 
@@ -362,12 +362,12 @@ def test_stats_timezone_bucketing(client, clock):
 
 def test_retention_purge(env, clock):
     env.setenv("RETENTION_DAYS", "1")
-    c = TestClient(mailpeek.create_app())
+    c = TestClient(likelyread.create_app())
     eid = new_id()
     hit(c, eid)
     clock["now"] += 2 * 86400
     hit(c, eid)
-    n = mailpeek.purge_old(c.app.state.db, c.app.state.cfg)
+    n = likelyread.purge_old(c.app.state.db, c.app.state.cfg)
     assert n == 1
     assert c.app.state.db.query("SELECT COUNT(*) c FROM hits")[0]["c"] == 1
 
@@ -377,7 +377,7 @@ def test_retention_purge(env, clock):
 
 def test_dashboard_served_with_csp(client):
     r = client.get("/")
-    assert r.status_code == 200 and "mailpeek" in r.text
+    assert r.status_code == 200 and "likelyread" in r.text
     assert "script-src 'self'" in r.headers["content-security-policy"]
     assert client.get("/assets/app.js").status_code == 200
     assert client.get("/assets/../app.py").status_code == 404
@@ -386,13 +386,13 @@ def test_dashboard_served_with_csp(client):
 
 def test_dashboard_can_be_disabled(env, clock):
     env.setenv("DASHBOARD", "false")
-    c = TestClient(mailpeek.create_app())
+    c = TestClient(likelyread.create_app())
     assert c.get("/").status_code == 404
 
 
 def test_cors_only_for_configured_origin(env, clock):
     env.setenv("ALLOWED_ORIGINS", "chrome-extension://abc")
-    c = TestClient(mailpeek.create_app())
+    c = TestClient(likelyread.create_app())
     ok = c.options("/api/ping", headers={"Origin": "chrome-extension://abc", "Access-Control-Request-Method": "GET"})
     assert ok.headers.get("access-control-allow-origin") == "chrome-extension://abc"
     bad = c.get("/api/ping", headers={"Origin": "https://evil.example", **AUTH})
@@ -415,27 +415,27 @@ def test_orphan_hits_purged_even_without_retention(client, clock):
     hit(client, known)
     hit(client, orphan)
     clock["now"] += 7 * 86400
-    assert mailpeek.purge_old(client.app.state.db, client.app.state.cfg) == 0, "kept while registration may still arrive"
+    assert likelyread.purge_old(client.app.state.db, client.app.state.cfg) == 0, "kept while registration may still arrive"
     clock["now"] += 2 * 86400
-    assert mailpeek.purge_old(client.app.state.db, client.app.state.cfg) == 1
+    assert likelyread.purge_old(client.app.state.db, client.app.state.cfg) == 1
     left = client.app.state.db.query("SELECT email_id FROM hits")
     assert [r["email_id"] for r in left] == [known]
 
 
 def test_retention_also_drops_old_email_metadata(env, clock):
     env.setenv("RETENTION_DAYS", "1")
-    c = TestClient(mailpeek.create_app())
+    c = TestClient(likelyread.create_app())
     old = new_id()
     register(c, old)
     clock["now"] += 2 * 86400
     fresh = new_id()
     register(c, fresh)
-    mailpeek.purge_old(c.app.state.db, c.app.state.cfg)
+    likelyread.purge_old(c.app.state.db, c.app.state.cfg)
     assert {e["id"] for e in c.get("/api/emails", headers=AUTH).json()} == {fresh}
 
 
 def test_rate_limiter_never_resets_live_counters():
-    rl = mailpeek.RateLimiter(2)
+    rl = likelyread.RateLimiter(2)
     rl.MAX_KEYS = 3
     assert rl.allow("a", 0) and rl.allow("a", 0) and not rl.allow("a", 0)
     assert rl.allow("b", 0) and rl.allow("c", 0)

@@ -2,19 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>mailpeek options</title>
+  <title>likelyread options</title>
   <link rel="stylesheet" href="options.css">
   <script src="options.js" defer></script>
 </head>
 <body>
   <main>
-    <h1>mailpeek</h1>
-    <p class="muted">Connect the extension to your self-hosted mailpeek server.</p>
+    <h1>likelyread</h1>
+    <p class="muted">Connect the extension to your self-hosted likelyread server.</p>
     <form id="form">
       <label for="serverUrl">Server URL</label>
       <input id="serverUrl" placeholder="https://t.example.com" required>
       <label for="token">Token</label>
-      <input id="token" type="password" placeholder="MAILPEEK_TOKEN from your server .env" required>
+      <input id="token" type="password" placeholder="LIKELYREAD_TOKEN from your server .env" required>
       <label class="check"><input id="trackByDefault" type="checkbox"> Track new emails by default</label>
       <label for="campaign">Campaign for new tracked emails (optional)</label>
       <input id="campaign" placeholder="e.g. Q4 outreach" maxlength="100">
