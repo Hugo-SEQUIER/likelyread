@@ -85,6 +85,8 @@ The dashboard is a static page with no data of its own: it reads the authenticat
 
 ## Email sent by scripts and AI agents
 
+**Give it to your agent:** [`skills/likelyread/SKILL.md`](skills/likelyread/SKILL.md) is a ready-made agent skill (the open `SKILL.md` format used by Claude Code, Hermes and other agents). Copy the folder into your agent's skills directory, for example `~/.claude/skills/likelyread/`, and it will know how to install the CLI, add the pixel, register sends and read opens, including when not to track.
+
 Anything that sends email itself (a script, a cron job, an AI agent) can use the `likelyread` CLI in `cli/`. It is a single Python file with no dependencies, and every command prints JSON.
 
 ```bash
