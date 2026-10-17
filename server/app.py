@@ -78,6 +78,9 @@ UUID4_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-
 APPLE_MPP_UA = "Mozilla/5.0"
 UA_MAX = 512
 MAX_AGE_SECONDS = 30 * 86400
+# Hits for ids that were never registered are dropped after this long. The
+# extension retries registration for 7 days, so 8 leaves a margin.
+ORPHAN_HIT_SECONDS = 8 * 86400
 NO_CAMPAIGN = "__none__"
 
 DASHBOARD_DIR = Path(__file__).parent / "dashboard"
@@ -276,6 +279,8 @@ def _clean_campaign(v: str | None) -> str | None:
     if v is None:
         return None
     v = " ".join(v.split())[:100]
+    if v == NO_CAMPAIGN:  # reserved filter value for "uncategorized"
+        return None
     return v or None
 
 
@@ -331,6 +336,8 @@ class CampaignRename(BaseModel):
 class RateLimiter:
     """Sliding one-minute window per key. Over-limit hits are not logged."""
 
+    MAX_KEYS = 50_000
+
     def __init__(self, per_minute: int) -> None:
         self.per_minute = per_minute
         self.windows: dict[str, deque] = {}
@@ -341,8 +348,12 @@ class RateLimiter:
             return True
         now = time.time() if now is None else now
         with self.lock:
-            if len(self.windows) > 50_000:  # crude memory bound
-                self.windows.clear()
+            if key not in self.windows and len(self.windows) >= self.MAX_KEYS:
+                # Drop only expired windows. Never reset live counters.
+                for k in [k for k, w in self.windows.items() if not w or w[-1] <= now - 60]:
+                    del self.windows[k]
+                if len(self.windows) >= self.MAX_KEYS:
+                    return False  # under a wide flood, new sources are answered but not logged
             w = self.windows.setdefault(key, deque())
             while w and w[0] <= now - 60:
                 w.popleft()
@@ -366,11 +377,22 @@ def _hour(ts: float, tz_minutes: int) -> int:
 
 
 def purge_old(db: DB, cfg: Settings, now: float | None = None) -> int:
-    if cfg.retention_days <= 0:
-        return 0
-    cutoff = (time.time() if now is None else now) - cfg.retention_days * 86400
-    n = db.execute("DELETE FROM hits WHERE ts < ?", (cutoff,)).rowcount
-    db.execute("DELETE FROM suppressions WHERE ts < ?", (cutoff,))
+    """Daily maintenance. Returns the number of hits deleted."""
+    now = time.time() if now is None else now
+    # Hits for ids never registered (late registration gave up, or junk traffic).
+    n = db.execute(
+        "DELETE FROM hits WHERE ts < ? AND email_id NOT IN (SELECT id FROM emails)", (now - ORPHAN_HIT_SECONDS,)
+    ).rowcount
+    db.execute(
+        "DELETE FROM suppressions WHERE ts < ? AND email_id NOT IN (SELECT id FROM emails)",
+        (now - ORPHAN_HIT_SECONDS,),
+    )
+    if cfg.retention_days > 0:
+        cutoff = now - cfg.retention_days * 86400
+        n += db.execute("DELETE FROM hits WHERE ts < ?", (cutoff,)).rowcount
+        db.execute("DELETE FROM suppressions WHERE ts < ?", (cutoff,))
+        # Subjects and recipients are personal data too.
+        db.execute("DELETE FROM emails WHERE sent_at < ?", (cutoff,))
     return n
 
 
@@ -390,10 +412,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
                     print(f"retention purge failed: {exc}")
                 await asyncio.sleep(86400)
 
-        task = asyncio.create_task(retention_loop()) if cfg.retention_days > 0 else None
+        task = asyncio.create_task(retention_loop())
         yield
-        if task:
-            task.cancel()
+        task.cancel()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db = db

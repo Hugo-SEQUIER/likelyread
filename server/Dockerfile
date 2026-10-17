@@ -18,6 +18,8 @@ HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
 
 # The bind-mounted ./data is created by Docker as root, so fix its owner at
 # start, then drop privileges for the server process.
-# --proxy-headers takes the client IP from Caddy's X-Forwarded-For. The server
-# port is only reachable from Caddy on the compose network.
-CMD ["sh", "-c", "chown -R mailpeek:mailpeek /data && exec setpriv --reuid=10001 --regid=10001 --clear-groups uvicorn app:create_app --factory --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips '*' --no-server-header"]
+# --proxy-headers takes the client IP from X-Forwarded-For, but only from peers
+# listed in FORWARDED_ALLOW_IPS (default: none but localhost). The compose file
+# trusts its private network, where Caddy is the only peer.
+ENV FORWARDED_ALLOW_IPS=127.0.0.1
+CMD ["sh", "-c", "chown -R mailpeek:mailpeek /data && exec setpriv --reuid=10001 --regid=10001 --clear-groups uvicorn app:create_app --factory --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips \"$FORWARDED_ALLOW_IPS\" --no-server-header"]

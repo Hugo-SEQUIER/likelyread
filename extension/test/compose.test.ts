@@ -178,3 +178,37 @@ test("viewing our own sent email sends a suppress ping, throttled, but not for t
   tracker.scan();
   assert.deepEqual(suppressed, [id, id]);
 });
+
+test("a reply quoting an earlier tracked email gets a new pixel id", () => {
+  const old = "9b2a6f3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+  const { body, click, registered } = setup();
+  const quote = body.querySelector(".gmail_quote")!;
+  quote.insertAdjacentHTML("beforeend", `<img src="${SERVER}/p/${old}.gif"><img src="https://ci3.googleusercontent.com/meips/x#${SERVER}/p/${old}.gif">`);
+  click();
+  assert.equal(registered.length, 1);
+  assert.notEqual(registered[0].id, old);
+  assert.equal(pixels(body).length, 2, "old quoted pixel untouched, one new pixel appended");
+});
+
+test("a quoted pixel does not force tracking on", () => {
+  const old = "9b2a6f3e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+  const dom = new JSDOM(`<body>${GMAIL_COMPOSE}</body>`);
+  dom.window.document.querySelector(".gmail_quote")!.insertAdjacentHTML("beforeend", `<img src="${SERVER}/p/${old}.gif">`);
+  const t = new ComposeTracker(dom.window.document, {
+    getConfig: () => ({ configured: true, serverUrl: SERVER, trackByDefault: false, campaign: "" }),
+    register: () => undefined,
+    suppress: () => undefined,
+    newId: () => "x",
+    now: () => 0,
+  });
+  t.scan();
+  assert.equal(dom.window.document.querySelector(".mailpeek-toggle")!.getAttribute("aria-pressed"), "false");
+});
+
+test("the toggle comes back if Gmail re-renders the toolbar", () => {
+  const { doc, tracker } = setup();
+  doc.querySelector(".mailpeek-toggle")!.closest("td")!.remove();
+  assert.equal(doc.querySelector(".mailpeek-toggle"), null);
+  tracker.scan();
+  assert.ok(doc.querySelector(".mailpeek-toggle"));
+});

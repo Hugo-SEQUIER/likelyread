@@ -62,7 +62,7 @@ It tells you whether someone has probably opened an email you sent, with no thir
 | `GRACE_SECONDS` | `20` | Hits within this window around send time count as self (compose preview). |
 | `SUPPRESS_WINDOW_SECONDS` | `60` | Hits within this window after a suppress ping count as self. |
 | `STORE_IP` | `true` | Set `false` to drop IPs (privacy mode). |
-| `RETENTION_DAYS` | `0` | `0` keeps data forever; otherwise hits older than this are purged daily. |
+| `RETENTION_DAYS` | `0` | `0` keeps data forever; otherwise hits older than this (and emails sent before the cutoff) are purged daily. Hits for never-registered ids are always purged after 8 days, since registration retries stop after 7. |
 | `ALLOWED_ORIGINS` | empty | Comma-separated CORS origins for `/api/*` (the extension origin). |
 | `PIXEL_RATE_PER_MIN` | `60` | **[added]** Pixel hits logged per IP per minute; extra requests still get the GIF. |
 | `DASHBOARD` | `true` | **[added]** Serve the web dashboard at `/`. |
@@ -138,7 +138,8 @@ Classification is computed at read time so the rules can be improved later witho
 - The bearer token is compared in constant time.
 - Pixel ids must match a UUIDv4 pattern. Anything else is ignored but still answered with the GIF.
 - Rate-limit `/p/*` per IP (`PIXEL_RATE_PER_MIN`, default 60/min) so the log can't be flooded. Done in the server because stock Caddy has no rate limiter. Over-limit requests still get the GIF but are not logged.
-- Caddy overwrites `X-Forwarded-For` with the real client address, so stored IPs can't be spoofed.
+- Caddy overwrites `X-Forwarded-For` with the real client address, and the server only trusts that header from private (Docker) addresses (`FORWARDED_ALLOW_IPS`), so stored IPs and rate-limit keys can't be spoofed.
+- `__none__` is reserved as the "uncategorized" filter value and can't be used as a campaign name.
 - **[changed]** The dashboard is a static page that holds no data. Everything it shows comes from the authenticated API, so it needs the same token. It is served with a strict CSP and can be turned off with `DASHBOARD=false`.
 
 ### 3.7 Dashboard [added]

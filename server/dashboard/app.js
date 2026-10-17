@@ -106,6 +106,7 @@ async function login(token, remember) {
   await api("/api/ping");
   sessionStorage.setItem(TOKEN_KEY, token);
   if (remember) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
 }
 
 // ---------------------------------------------------------------- campaign filter
@@ -279,10 +280,10 @@ async function viewEmails(root, params) {
                 ))),
             ))
         : h("p", { class: "empty" }, "No emails match these filters."),
-      total > limit
+      total > limit || page > 0
         ? h("div", { class: "pager" },
-            h("button", { class: "btn ghost small", disabled: page === 0, onclick: () => go({ page: page - 1 }) }, "Previous"),
-            h("span", { class: "muted small" }, `Page ${page + 1} of ${Math.ceil(total / limit)}`),
+            h("button", { class: "btn ghost small", disabled: page === 0, onclick: () => go({ page: Math.min(page - 1, Math.max(0, Math.ceil(total / limit) - 1)) }) }, "Previous"),
+            h("span", { class: "muted small" }, `Page ${page + 1} of ${Math.max(1, Math.ceil(total / limit))}`),
             h("button", { class: "btn ghost small", disabled: (page + 1) * limit >= total, onclick: () => go({ page: page + 1 }) }, "Next"))
         : null,
     ),

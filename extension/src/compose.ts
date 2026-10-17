@@ -24,7 +24,11 @@ interface ComposeState {
   root: HTMLElement;
   enabled: boolean;
   toggle: HTMLElement;
+  pixelId: string | null;
 }
+
+/** Quoted history in a reply. Pixels of earlier emails live here and must never be reused. */
+const QUOTED = ".gmail_quote, .gmail_extra, blockquote";
 
 const EYE_ON =
   '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-5 0-9 4.5-10 7 1 2.5 5 7 10 7s9-4.5 10-7c-1-2.5-5-7-10-7zm0 11a4 4 0 110-8 4 4 0 010 8zm0-2a2 2 0 100-4 2 2 0 000 4z"/></svg>';
@@ -52,7 +56,10 @@ export class ComposeTracker {
       for (const body of Array.from(this.doc.querySelectorAll<HTMLElement>(SEL.composeBody))) {
         if (!body.dataset[ENHANCED]) this.enhance(body);
       }
-      for (const [body] of this.composes) if (!body.isConnected) this.composes.delete(body);
+      for (const [body, st] of this.composes) {
+        if (!body.isConnected) this.composes.delete(body);
+        else if (!st.toggle.isConnected) this.insertToggle(st); // Gmail re-rendered the toolbar
+      }
     });
     this.safe(() => this.scanForOwnPixels());
   }
@@ -68,10 +75,21 @@ export class ComposeTracker {
     if (!root) return; // not a compose we understand: leave it alone
     body.dataset[ENHANCED] = "1";
     const cfg = this.deps.getConfig();
-    const existing = this.pixelIn(body); // a draft or undone send already tracked
-    const state: ComposeState = { root, enabled: cfg.trackByDefault || !!existing, toggle: this.doc.createElement("div") };
+    const existing = this.pixelIn(body); // a draft or undone send that we already tracked
+    const state: ComposeState = {
+      root,
+      enabled: cfg.trackByDefault || !!existing,
+      toggle: this.doc.createElement("div"),
+      pixelId: existing,
+    };
     state.toggle = this.makeToggle(state);
-    const send = root.querySelector<HTMLElement>(SEL.sendButton);
+    this.insertToggle(state);
+    this.composes.set(body, state);
+    this.renderToggle(state);
+  }
+
+  private insertToggle(state: ComposeState): void {
+    const send = state.root.querySelector<HTMLElement>(SEL.sendButton);
     const cell = send?.closest("td");
     if (cell?.parentElement) {
       const td = this.doc.createElement("td");
@@ -80,8 +98,6 @@ export class ComposeTracker {
     } else if (send?.parentElement) {
       send.parentElement.after(state.toggle);
     }
-    this.composes.set(body, state);
-    this.renderToggle(state);
   }
 
   private makeToggle(state: ComposeState): HTMLElement {
@@ -150,7 +166,7 @@ export class ComposeTracker {
   onSend(body: HTMLElement, state: ComposeState): void {
     const cfg = this.deps.getConfig();
     if (!state.enabled || !cfg.configured) return;
-    let id = this.pixelIn(body);
+    let id = state.pixelId && this.hasPixel(body, state.pixelId) ? state.pixelId : this.pixelIn(body);
     if (!id) {
       id = this.deps.newId();
       const img = this.doc.createElement("img");
@@ -160,6 +176,7 @@ export class ComposeTracker {
       img.alt = "";
       img.setAttribute("style", "display:none!important");
       body.appendChild(img);
+      state.pixelId = id;
       // Let Gmail notice the edit. Optional: registration must not depend on it.
       this.safe(() => body.dispatchEvent(new this.doc.defaultView!.Event("input", { bubbles: true })));
     }
@@ -176,14 +193,25 @@ export class ComposeTracker {
     });
   }
 
+  /**
+   * The pixel this compose already carries (draft, failed or undone send).
+   * Only direct pixel URLs outside quoted history count: a reply quoting an
+   * earlier tracked email must get its own new id.
+   */
   private pixelIn(body: HTMLElement): string | null {
     const server = this.deps.getConfig().serverUrl;
     if (!server) return null;
     for (const img of Array.from(body.querySelectorAll("img"))) {
-      const id = extractPixelId(img.getAttribute("src") || "", server);
+      const src = img.getAttribute("src") || "";
+      if (!src.startsWith(`${server}/p/`) || img.closest(QUOTED)) continue;
+      const id = extractPixelId(src, server);
       if (id) return id;
     }
     return null;
+  }
+
+  private hasPixel(body: HTMLElement, id: string): boolean {
+    return Array.from(body.querySelectorAll("img")).some((img) => (img.getAttribute("src") || "").includes(`/p/${id}.gif`));
   }
 
   private subjectOf(root: HTMLElement): string {

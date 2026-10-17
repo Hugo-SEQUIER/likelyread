@@ -92,7 +92,7 @@ All settings live in `deploy/.env` (see `.env.example`):
 | `GRACE_SECONDS` | `20` | Hits this close to the send time count as your compose preview. |
 | `SUPPRESS_WINDOW_SECONDS` | `60` | Hits within this window after you open your own sent email count as you. |
 | `STORE_IP` | `true` | `false` stops storing IP addresses. |
-| `RETENTION_DAYS` | `0` | Delete hits older than this many days (`0` keeps everything). |
+| `RETENTION_DAYS` | `0` | Delete hits, and emails sent before the cutoff, older than this many days (`0` keeps everything). Hits for ids that were never registered are always dropped after 8 days. |
 | `PIXEL_RATE_PER_MIN` | `60` | Pixel hits logged per IP per minute. |
 | `DASHBOARD` | `true` | Serve the dashboard at `/`. |
 

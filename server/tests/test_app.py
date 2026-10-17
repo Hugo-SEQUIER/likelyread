@@ -397,3 +397,48 @@ def test_cors_only_for_configured_origin(env, clock):
     assert ok.headers.get("access-control-allow-origin") == "chrome-extension://abc"
     bad = c.get("/api/ping", headers={"Origin": "https://evil.example", **AUTH})
     assert "access-control-allow-origin" not in bad.headers
+
+
+# ---- review fixes ------------------------------------------------------------
+
+
+def test_reserved_campaign_name_is_uncategorized(client):
+    eid = new_id()
+    register(client, eid, campaign="__none__")
+    assert get_status(client, eid)["campaign"] is None
+    assert [c["name"] for c in client.get("/api/campaigns", headers=AUTH).json()] == [None]
+
+
+def test_orphan_hits_purged_even_without_retention(client, clock):
+    known, orphan = new_id(), new_id()
+    register(client, known)
+    hit(client, known)
+    hit(client, orphan)
+    clock["now"] += 7 * 86400
+    assert mailpeek.purge_old(client.app.state.db, client.app.state.cfg) == 0, "kept while registration may still arrive"
+    clock["now"] += 2 * 86400
+    assert mailpeek.purge_old(client.app.state.db, client.app.state.cfg) == 1
+    left = client.app.state.db.query("SELECT email_id FROM hits")
+    assert [r["email_id"] for r in left] == [known]
+
+
+def test_retention_also_drops_old_email_metadata(env, clock):
+    env.setenv("RETENTION_DAYS", "1")
+    c = TestClient(mailpeek.create_app())
+    old = new_id()
+    register(c, old)
+    clock["now"] += 2 * 86400
+    fresh = new_id()
+    register(c, fresh)
+    mailpeek.purge_old(c.app.state.db, c.app.state.cfg)
+    assert {e["id"] for e in c.get("/api/emails", headers=AUTH).json()} == {fresh}
+
+
+def test_rate_limiter_never_resets_live_counters():
+    rl = mailpeek.RateLimiter(2)
+    rl.MAX_KEYS = 3
+    assert rl.allow("a", 0) and rl.allow("a", 0) and not rl.allow("a", 0)
+    assert rl.allow("b", 0) and rl.allow("c", 0)
+    assert not rl.allow("d", 1), "table full of live windows: new key refused, not reset"
+    assert not rl.allow("a", 1), "a is still limited"
+    assert rl.allow("d", 61), "expired windows are evicted"

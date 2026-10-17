@@ -35,15 +35,14 @@ function scheduleScan(): void {
   });
 }
 
-(async () => {
-  await refreshConfig();
-  tracker.install();
-  scheduleScan();
-  new MutationObserver(scheduleScan).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["src"],
-  });
-  chrome.storage.onChanged.addListener(() => void refreshConfig());
-})();
+// Listen and observe right away so early compose windows are not missed;
+// config arrives a moment later and triggers a rescan.
+tracker.install();
+new MutationObserver(scheduleScan).observe(document.documentElement, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ["src"],
+});
+chrome.storage.onChanged.addListener(() => void refreshConfig().then(scheduleScan));
+void refreshConfig().then(scheduleScan);
