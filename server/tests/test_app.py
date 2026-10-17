@@ -515,3 +515,9 @@ def test_every_hit_says_why(client, clock):
     assert "compose window" in reasons[0]
     assert "Apple Mail" in reasons[1]
     assert "Gmail's image proxy" in reasons[2]
+
+
+def test_dashboard_assets_have_correct_types(client):
+    assert client.get("/assets/bricolage-latin.woff2").headers["content-type"] == "font/woff2"
+    assert client.get("/assets/favicon.svg").headers["content-type"] == "image/svg+xml"
+    assert client.get("/assets/fonts.css").headers["content-type"].startswith("text/css")

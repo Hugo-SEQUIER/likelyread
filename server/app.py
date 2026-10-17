@@ -695,8 +695,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         )
         files = {p.name: p for p in DASHBOARD_DIR.iterdir() if p.is_file()}
 
+        # Explicit types: the slim image's mimetypes table lacks woff2 and svg can vary.
+        types = {".woff2": "font/woff2", ".svg": "image/svg+xml", ".css": "text/css", ".js": "text/javascript"}
+
         def _serve(name: str) -> FileResponse:
-            resp = FileResponse(files[name])
+            resp = FileResponse(files[name], media_type=types.get(Path(name).suffix))
             resp.headers["Content-Security-Policy"] = dashboard_csp
             resp.headers["Cache-Control"] = "no-cache"
             return resp
