@@ -166,6 +166,13 @@ npm install
 npm test          # unit tests + compose tests against a fake Gmail DOM
 npm run typecheck
 npm run build     # outputs dist/
+# end to end: real Chromium with the built extension, a fake Gmail on
+# mail.google.com and a real server (send, campaign, sender, server down, bad token)
+CHROME_PATH=/path/to/chrome PYTHON=../server/.venv/bin/python npm run e2e
+
+# agent CLI
+cd cli
+python -m pytest -q tests
 ```
 
 ## Roadmap
