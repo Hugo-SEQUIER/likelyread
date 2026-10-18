@@ -17,8 +17,8 @@ APPLE = "Mozilla/5.0"
 OUTLOOK = "Mozilla/4.0 (compatible; ms-office; MSOffice 16)"
 
 CAMPAIGNS = {
-    "Seed round outreach": (["Quick question about {co}", "Intro: Semantis x {co}", "Following up, {co}"], 0.62),
-    "Customer onboarding": (["Welcome to Semantis, {co}", "Your setup call", "Getting started checklist"], 0.81),
+    "Seed round outreach": (["Quick question about {co}", "Intro: Northwind x {co}", "Following up, {co}"], 0.62),
+    "Customer onboarding": (["Welcome to Northwind, {co}", "Your setup call", "Getting started checklist"], 0.81),
     "Podcast pitches": (["Guest idea for your show", "Pitch: AI search for SMBs"], 0.34),
     None: (["Invoice {n}", "Re: contract draft", "Coffee next week?"], 0.5),
 }

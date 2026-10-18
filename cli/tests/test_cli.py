@@ -26,7 +26,7 @@ def test_text_to_html_keeps_the_copy_and_appends_the_pixel():
     out = lr.text_to_html(text, lr.pixel_tag("https://t.x.com", "abc"))
     assert out.count("<p>") == 3
     assert '<a href="https://example.com/portfolio">https://example.com/portfolio</a>' in out
-    assert "Best,<br>Hugo SEQUIER &lt;me&gt;" in out
+    assert "Best,<br>Sam &lt;me&gt;" in out
     assert out.rstrip().endswith('style="display:none!important">\n</div>')
 
 

@@ -10,7 +10,7 @@ import { ComposeTracker, extractEmail } from "../src/compose";
 import type { ContentConfig, PendingEmail } from "../src/shared";
 
 const SERVER = "https://t.example.com";
-const ME = "hugo@semantis.co";
+const ME = "you@example.com";
 
 // Recipients and subject sit in a header table; the body and toolbar sit in a
 // separate inner block. Only div.M9 holds all of them.
@@ -119,9 +119,9 @@ test("send injects one pixel and registers subject, recipients, campaign and sen
 });
 
 test("the From field wins over the account address", () => {
-  const { click, registered } = setup({}, { from: '<input name="from" type="hidden" value="Hugo Sales <Sales@Semantis.co>">' });
+  const { click, registered } = setup({}, { from: '<input name="from" type="hidden" value="Team Sales <Sales@Example.com>">' });
   click();
-  assert.equal(registered[0].sender, "sales@semantis.co");
+  assert.equal(registered[0].sender, "sales@example.com");
 });
 
 test("no detectable sender is sent as null, not guessed", () => {
@@ -264,8 +264,8 @@ test("the recipient's view in this same browser is NOT suppressed: it is a real 
 });
 
 test("a send-as address used before counts as ours", () => {
-  const { doc, tracker, suppressed } = setup({ senders: ["sales@semantis.co"] });
-  message(doc, "sales@semantis.co", OLD);
+  const { doc, tracker, suppressed } = setup({ senders: ["sales@example.com"] });
+  message(doc, "sales@example.com", OLD);
   tracker.scan();
   assert.deepEqual(suppressed, [OLD]);
 });
@@ -322,6 +322,6 @@ test("the control comes back if Gmail re-renders the toolbar", () => {
 });
 
 test("extractEmail reads Gmail's tab title", () => {
-  assert.equal(extractEmail("Inbox (3) - Hugo.Sequier@gmail.com - Gmail"), "hugo.sequier@gmail.com");
+  assert.equal(extractEmail("Inbox (3) - Sam.Rivera@gmail.com - Gmail"), "sam.rivera@gmail.com");
   assert.equal(extractEmail("Gmail"), null);
 });
