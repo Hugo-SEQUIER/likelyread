@@ -170,10 +170,10 @@ npm run build     # outputs dist/
 
 ## Roadmap
 
-- v0.2: status badges in Gmail's Sent list and thread view; per-email "stop tracking".
-- v0.3: notifications (ntfy, Telegram, webhook) on first open, opt-in.
-- v0.4: link click tracking.
-- Later: per-recipient pixels, Firefox, a CLI.
+- v0.3: status badges in Gmail's Sent list and thread view; per-email "stop tracking".
+- v0.4: notifications (ntfy, Telegram, webhook) on first open, opt-in.
+- v0.5: link click tracking.
+- Later: per-recipient pixels from Gmail web, Firefox.
 
 ## License
 

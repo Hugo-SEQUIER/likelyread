@@ -534,3 +534,31 @@ def test_hit_before_send_is_a_draft_preview(client, clock):
     assert [h["kind"] for h in s["hits"]] == ["self", "open"]
     assert "draft preview" in s["hits"][0]["reason"]
     assert s["opens"] == 1
+
+
+def test_campaigns_survive_an_email_without_sent_at(client):
+    import os
+    import sqlite3
+
+    legacy, normal = new_id(), new_id()
+    register(client, legacy, campaign="Legacy")
+    register(client, normal, campaign="Legacy")
+    con = sqlite3.connect(os.environ["DB_PATH"])  # a hand-edited or very old database
+    con.execute("UPDATE emails SET sent_at = NULL WHERE id = ?", (legacy,))
+    con.commit()
+    con.close()
+    r = client.get("/api/campaigns", headers=AUTH)
+    assert r.status_code == 200
+    c = next(c for c in r.json() if c["name"] == "Legacy")
+    assert c["emails"] == 2 and c["last_sent"] is not None
+
+
+def test_opens_by_hour_honours_the_days_window(client, clock):
+    eid = new_id()
+    register(client, eid)
+    clock["now"] += 300
+    hit(client, eid, ua=GMAIL_UA_2026)  # an open, then 40 days pass
+    clock["now"] += 40 * 86400
+    st = client.get("/api/stats?days=7", headers=AUTH).json()
+    assert sum(d["opens"] for d in st["timeline"]) == 0
+    assert sum(st["opens_by_hour"]) == 0

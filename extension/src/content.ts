@@ -70,9 +70,10 @@ new MutationObserver(scheduleScan).observe(document.documentElement, {
   attributeFilter: ["src"],
 });
 
-const CONFIG_KEYS = ["serverUrl", "token", "trackByDefault", "campaign", "sendersByAccount", "campaignCache"];
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !CONFIG_KEYS.some((k) => k in changes)) return;
+// The background tells us when settings change. This script never reads extension
+// storage itself: that is where the token lives, and it is closed to content scripts.
+chrome.runtime.onMessage.addListener((msg: Message, sender) => {
+  if (sender.id !== chrome.runtime.id || msg.type !== "configChanged") return;
   void refreshConfig().then(() => {
     tracker.refresh();
     scheduleScan();

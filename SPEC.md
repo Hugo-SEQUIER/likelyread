@@ -1,10 +1,10 @@
-# likelyread: Specification (v0.1)
+# Likelyread: Specification (v0.2)
 
 Self-hosted, open-source email open tracking for Gmail, for a single user.
-It tells you whether someone has probably opened an email you sent, with no third-party SaaS involved.
+It tells you when someone opens an email you sent, with no third-party SaaS involved.
 
 - **License:** MIT
-- **Status:** v0.1 implemented, plus a campaign dashboard (marked **[added]** below)
+- **Status:** v0.2 implemented: the v0.1 spec plus a campaign dashboard, a campaign picker in Gmail, the sender address, per-hit reasons and a CLI for agents (marked **[added]** below)
 
 ---
 
@@ -14,7 +14,7 @@ It tells you whether someone has probably opened an email you sent, with no thir
 - Track opens of emails sent from **Gmail web** (Chrome).
 - **Self-hosted** on any VPS with a single `docker compose up`.
 - **Single user**: one server, one token, one Gmail account. No accounts and no multi-tenancy.
-- Minimal surface: one small server and one Chrome extension.
+- Minimal surface: one small server, one Chrome extension and **[added]** one dependency-free CLI for scripts and AI agents.
 - Honest data: label each hit as an open, a self-view or a prefetch, and never present a hit as proof.
 - **[added]** A token-protected web dashboard on the server to follow campaigns: open rates per campaign, a 30-day timeline, opens by hour, recent opens, and per-email detail.
 
@@ -75,7 +75,8 @@ emails(
   subject     TEXT,
   recipients  TEXT,               -- JSON array of addresses
   sent_at     REAL,               -- unix seconds (server clock)
-  campaign    TEXT NULL           -- [added] free-text campaign name, NULL = uncategorized
+  campaign    TEXT NULL,          -- [added] free-text campaign name, NULL = uncategorized
+  sender      TEXT NULL           -- [added] address the email was sent from (lowercase)
 )
 hits(
   id        INTEGER PRIMARY KEY,
@@ -95,15 +96,16 @@ suppressions(
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/p/{id}.gif` | public | Logs a hit and returns a 43-byte transparent GIF. Always returns 200 with the GIF, even for an unknown or malformed id, so tracking never shows as a broken image. |
-| `POST` | `/api/emails` | bearer | Registers a sent email: `{id, subject, recipients[], age, campaign?}`. `age` is the number of seconds since the email was actually sent, for retried registrations; it is relative so clock skew doesn't matter. The call is idempotent: a retry carries the same data. A later registration of the same id (after a failed or undone send) updates the record to the real send. |
+| `POST` | `/api/emails` | bearer | Registers a sent email: `{id, subject, recipients[], age, campaign?, sender?}`. `age` may be up to 30 days. `age` is the number of seconds since the email was actually sent, for retried registrations; it is relative so clock skew doesn't matter. The call is idempotent: a retry carries the same data. A later registration of the same id (after a failed or undone send) updates the record to the real send. |
 | `POST` | `/api/emails/{id}/suppress` | bearer | Marks "I am viewing this email now", so hits in the next `SUPPRESS_WINDOW_SECONDS` count as self. |
-| `GET` | `/api/emails?limit=50` | bearer | Recent emails with a summary (see 3.5). **[added]** Filters `campaign` (`__none__` = uncategorized), `q`, `status` (`opened`, `not_opened`, `prefetch_only`), `offset`; total in `X-Total-Count`. |
+| `GET` | `/api/emails?limit=50` | bearer | Recent emails with a summary (see 3.5). **[added]** Filters `campaign` (`__none__` = uncategorized), `sender`, `q`, `status` (`opened`, `not_opened`, `prefetch_only`), `offset`; total in `X-Total-Count`. |
 | `GET` | `/api/emails/{id}` | bearer | One email plus its full hit list with a classification for each hit. |
 | `DELETE` | `/api/emails/{id}` | bearer | Deletes an email and its hits. |
 | `PATCH` | `/api/emails/{id}` | bearer | **[added]** Set `{campaign}` (or `null`). |
 | `GET` | `/api/campaigns` | bearer | **[added]** Per-campaign stats: emails, opened, open rate, opens, prefetch-only, median time to first open, last open, last sent. |
 | `PATCH` | `/api/campaigns/{name}` | bearer | **[added]** Rename a campaign (`__none__` targets uncategorized emails). |
-| `GET` | `/api/stats?campaign=&days=30&tz=` | bearer | **[added]** Dashboard KPIs, daily timeline (sent vs opens), opens by hour, recent opens. `tz` is minutes east of UTC. |
+| `GET` | `/api/senders` | bearer | **[added]** Addresses emails were sent from, with counts. |
+| `GET` | `/api/stats?campaign=&sender=&days=30&tz=` | bearer | **[added]** Dashboard KPIs, daily timeline (sent vs opens) and opens by hour, both over the last `days`; recent opens. `tz` is minutes east of UTC. |
 | `GET` | `/api/ping` | bearer | Auth and connectivity check, used by the extension's options page. |
 | `GET` | `/healthz` | public | Liveness check. |
 
@@ -115,11 +117,13 @@ CORS: `/api/*` allows only the extension origin (`chrome-extension://<id>`, conf
 
 Each hit is classified in this order, and the first rule that matches wins:
 
-1. **`self`**: `ts` is within `[sent_at − 10s, sent_at + GRACE_SECONDS]`, or within `[suppress − 5s, suppress + SUPPRESS_WINDOW_SECONDS]` of any suppression.
-2. **`prefetch`**: the hit looks like Apple Mail Privacy Protection (UA is exactly `Mozilla/5.0`, and optionally the IP is in Apple's published egress ranges). This rule is heuristic.
+1. **`self`**: `ts` is before `sent_at − 10s` (**[added]** a draft preview: the email was not sent yet, which matters when an agent embeds the pixel in a draft and registers it after sending), or within `[sent_at − 10s, sent_at + GRACE_SECONDS]`, or within `[suppress − 5s, suppress + SUPPRESS_WINDOW_SECONDS]` of any suppression.
+2. **`prefetch`**: the hit looks like Apple Mail Privacy Protection: the UA is exactly `Mozilla/5.0`. This rule is heuristic (no IP check yet).
 3. **`open`**: everything else.
 
-Each hit also carries `via`: `gmail_proxy` when the UA contains `GoogleImageProxy`, otherwise `direct`.
+Each hit also carries `via`: `gmail_proxy` when the UA contains `GoogleImageProxy` or the UA Gmail's proxy sends since 2026 (`… Chrome/42.0.2311.135 Safari/537.36 Edge/12.246`), or the IP is in Google's ranges; otherwise `direct`. **[added]** Each hit also carries a human-readable `reason` for its kind.
+
+The UA is set by whoever loads the image, so a recipient can always hide their own open (by blocking images or faking the UA). Classification is about filtering noise, not resisting a recipient who does not want to be tracked.
 
 Classification is computed at read time so the rules can be improved later without migrating data.
 
@@ -130,7 +134,7 @@ Classification is computed at read time so the rules can be improved later witho
   "id": "…", "subject": "…", "recipients": ["…"], "sent_at": 0,
   "opens": 2, "first_open": 0, "last_open": 0,
   "prefetch": 1, "self": 3,
-  "campaign": null, "status": "opened"
+  "campaign": null, "sender": "you@example.com", "status": "opened"
 }
 ```
 
@@ -148,8 +152,8 @@ Served at `https://{domain}/`. Sign in with `LIKELYREAD_TOKEN` (kept for the tab
 
 - **Overview:** tracked emails, opened (open rate), total opens and last 7 days, median time to first open, prefetch-only, filtered self views; a 30-day sent vs opens chart; opens by hour of day (best time to send); recent opens.
 - **Campaigns:** one row per campaign with emails, opened, open rate, opens, time to open, last open, last sent; rename; click through to its emails.
-- **Emails:** search, status filter, campaign filter, pagination; detail page with every hit (time, kind, via, UA, IP), campaign assignment and delete.
-- A global campaign filter applies to every view.
+- **Emails:** search, status filter, campaign filter, pagination, From column; detail page with every hit (time, verdict, reason, via, UA, IP), campaign assignment and delete.
+- Global campaign and sender (From address) filters apply to every view.
 
 Open rate = emails with at least one `open` hit / tracked emails. Prefetch-only emails are not counted as opened.
 
@@ -162,6 +166,7 @@ Open rate = emails with at least one `open` hit / tracked emails. Prefetch-only 
 - `declarativeNetRequest` (self-view blocking, see 4.4)
 - `alarms` **[added]** (wakes the service worker to retry queued registrations)
 - host permissions: `https://mail.google.com/*` and the user's server URL (an optional host permission requested at setup)
+- **[added]** Extension storage is restricted to trusted contexts (`chrome.storage.local.setAccessLevel`), so the Gmail content script cannot read the token. It receives a token-free configuration from the service worker by message, and a `configChanged` message when settings change.
 
 ### 4.2 Options page
 - Fields: server URL and token.
@@ -171,17 +176,17 @@ Open rate = emails with at least one `open` hit / tracked emails. Prefetch-only 
 
 ### 4.3 Compose integration (content script on `mail.google.com`)
 1. Detect compose and reply windows with a `MutationObserver`. Gmail selectors are isolated in **one file** (`gmail-selectors.ts`), because Gmail's DOM changes and this is the main maintenance cost.
-2. Add a small **tracking toggle** (eye icon) to each compose toolbar. Its default comes from the options page.
+2. Add a small **tracking toggle** (eye icon) to each compose toolbar. Its default comes from the options page. **[added]** Next to it, a **campaign picker** lists existing campaigns, "No campaign" and a field for a new one; the pick applies to this email and becomes the default. A compose window opened before the settings load is updated when they arrive, unless the user already changed it.
 3. On **Send** (clicking the button or pressing `Ctrl/Cmd+Enter`), if tracking is on:
    - generate a UUIDv4;
    - append `<img src="{server}/p/{uuid}.gif" width="1" height="1" alt="" style="display:none!important">` at the end of the body's contenteditable;
    - let Gmail's send proceed without blocking or delaying it;
-   - queue `POST /api/emails {id, subject, recipients(to+cc+bcc), age}` in `chrome.storage`, then flush it. Retry on failure with backoff for up to 7 days. The pixel works even if registration is late.
+   - queue `POST /api/emails {id, subject, recipients(to+cc+bcc), age, campaign, sender}` in `chrome.storage`, where `sender` is the From field or, failing that, the account in the tab title, then flush it. Retry on failure with backoff for up to 7 days. The pixel works even if registration is late.
 4. If the injection fails for any reason, the email is still sent untouched. Tracking must never break sending.
 
 ### 4.4 Self-view suppression (two layers)
-1. **Block**: a `declarativeNetRequest` rule blocks requests from the user's own browser to `{server}/p/*`, and to Google image-proxy URLs that wrap it where they can be matched. *To verify during implementation: whether proxied URLs, `…googleusercontent.com/…#{original}`, can be matched.*
-2. **Suppress ping**: when the user opens a thread in Gmail that contains a likelyread pixel (detected by scanning the rendered message DOM for the server host), send `POST /api/emails/{id}/suppress` before the image loads, or as soon as possible.
+1. **Block**: a `declarativeNetRequest` rule blocks requests from the user's own browser to `{server}/p/*`. **[changed]** Google image-proxy URLs are deliberately not blocked: a recipient who reads in the same browser (another Gmail account) must still count.
+2. **Suppress ping**: when the user views a message **they sent** that contains a Likelyread pixel, send `POST /api/emails/{id}/suppress` as soon as possible, and again every 20 s while it stays on screen. **[changed]** "They sent" means the message's sender is the account signed in to that tab, or a send-as address that account has sent tracked email from (remembered per account). Without a sender line, only the Sent folder counts. Received messages never trigger a ping. The sender shown by Gmail comes from the email's From header, so a spoofed From could trigger a ping for a pixel id the attacker knows; the effect is limited to marking hits in the next 60 s as self.
 
 The server-side grace window (3.4) covers the compose preview.
 
@@ -192,7 +197,7 @@ The server-side grace window (3.4) covers the compose preview.
   - **Prefetch only (Apple)**, shown greyed out
 - Clicking a row expands its hit list with the time, `via`, UA and kind.
 - Refresh happens on popup open. There is no background polling, which follows from not having notifications.
-- **[added]** An "active campaign" field (with suggestions from existing campaigns) and a link to the dashboard. Every email tracked while a campaign is active is tagged with it.
+- **[added]** An "active campaign" field (with suggestions from existing campaigns), the From address on each row, each hit's reason, and a link to the dashboard.
 
 ### 4.6 Out of scope for v0.1 (UI)
 - No badges in the Gmail Sent list (planned for v0.2).
@@ -213,9 +218,14 @@ likelyread/
 │   ├── manifest.json
 │   ├── src/ (content.ts, background.ts, popup/, options/, gmail-selectors.ts)
 │   └── build script (esbuild)
+├── cli/
+│   ├── likelyread.py        # [added] agent / script CLI, stdlib only, JSON output
+│   └── tests/
+├── skills/likelyread/SKILL.md   # [added] agent skill
 ├── deploy/
 │   ├── docker-compose.yml   # server + caddy, volume ./data
 │   └── Caddyfile            # {$DOMAIN} → server:8000
+├── docs/screenshots/
 ├── SPEC.md
 ├── README.md
 └── LICENSE
@@ -244,7 +254,7 @@ Requirements: any 512 MB VPS works, since the server is a single process.
 | Gmail DOM changes | Can break injection. Isolated in `gmail-selectors.ts`, and fails safe (the email is sent untracked). |
 | Deliverability | A fresh domain plus hidden pixels can raise spam scores. Use HTTPS and a domain with some history. |
 
-**Bottom line:** an "open" means *probably opened*, never proof.
+**Bottom line:** an "open" means the image loaded on the recipient's side. That is what every open tracker measures; it is not proof that someone read the email.
 
 ---
 
@@ -260,11 +270,12 @@ Requirements: any 512 MB VPS works, since the server is a single process.
 
 | Version | Scope |
 |---|---|
-| **v0.1** | Server, extension (inject, register, suppress, popup), Docker + Caddy deploy |
-| v0.2 | Status badges in Gmail's Sent list and thread view; per-email "stop tracking" |
-| v0.3 | Notifications (ntfy / Telegram / webhook), first open only, opt-in |
-| v0.4 | Link click tracking (redirect `/l/{id}/{n}`) |
-| later | Per-recipient pixels (send separate copies), Firefox support, CLI (`likelyread ls`) |
+| v0.1 | Server, extension (inject, register, suppress, popup), Docker + Caddy deploy |
+| **v0.2** | Campaign dashboard, campaign picker in compose, sender address, per-hit reasons, CLI and skill for agents |
+| v0.3 | Status badges in Gmail's Sent list and thread view; per-email "stop tracking" |
+| v0.4 | Notifications (ntfy / Telegram / webhook), first open only, opt-in |
+| v0.5 | Link click tracking (redirect `/l/{id}/{n}`) |
+| later | Per-recipient pixels from Gmail web (send separate copies), Firefox support |
 
 ---
 

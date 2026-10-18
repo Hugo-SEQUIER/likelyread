@@ -173,6 +173,34 @@ test("'No campaign' sends without a campaign; Escape and outside clicks close th
   assert.equal(registered[0].campaign, null);
 });
 
+test("a compose opened before the settings arrived picks them up", () => {
+  // Gmail can render a compose before the background answers getConfig.
+  const a = setup({ trackByDefault: true, campaign: "" });
+  Object.assign(a.config, { trackByDefault: false, campaign: "Q4 outreach" });
+  a.tracker.refresh();
+  assert.equal(a.eye().getAttribute("aria-pressed"), "false");
+  a.click();
+  assert.equal(pixels(a.body).length + a.registered.length, 0, "tracking off by default means no pixel");
+
+  const b = setup({ campaign: "" });
+  Object.assign(b.config, { campaign: "Q4 outreach" });
+  b.tracker.refresh();
+  b.click();
+  assert.equal(b.registered[0].campaign, "Q4 outreach");
+});
+
+test("a choice made in the compose survives a settings change", () => {
+  const { win, eye, picker, doc, config, tracker, click, registered } = setup();
+  picker().dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+  [...doc.querySelectorAll<HTMLElement>(".lr-opt")][2].dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+  Object.assign(config, { campaign: "Something else" });
+  tracker.refresh();
+  assert.equal(picker().textContent, "Seed round");
+  assert.equal(eye().getAttribute("aria-pressed"), "true");
+  click();
+  assert.equal(registered[0].campaign, "Seed round");
+});
+
 test("the picker is hidden while tracking is off", () => {
   const { win, eye, picker } = setup();
   eye().dispatchEvent(new win.MouseEvent("click", { bubbles: true }));

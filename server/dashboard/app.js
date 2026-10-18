@@ -403,7 +403,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("refresh").addEventListener("click", render);
   document.getElementById("campaign-filter").addEventListener("change", (e) => {
     state.campaign = e.target.value;
-    if (location.hash.startsWith("#/emails")) location.hash = `#/emails?${qs({ campaign: state.campaign })}`;
+    if (location.hash.startsWith("#/emails")) {
+      const cur = new URLSearchParams(location.hash.split("?")[1] || "");
+      location.hash = `#/emails?${qs({ campaign: state.campaign, status: cur.get("status") || "", q: cur.get("q") || "" })}`;
+    }
     else render();
   });
   document.getElementById("sender-filter").addEventListener("change", (e) => {

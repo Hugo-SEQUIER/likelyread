@@ -8,7 +8,7 @@ license: MIT
 
 Likelyread is a self-hosted email open tracker. A tiny invisible image (a "pixel") goes into the HTML part of an email. When the recipient's mail app loads it, the server records a hit, and classifies it as an open, a self-view or a prefetch. This skill tells you how to add the pixel to emails you send, register them, and read the results back.
 
-Everything goes through the `likelyread` command. It is a single Python 3.9+ file with no dependencies, and every command prints JSON.
+Everything goes through the `likelyread` command. It is a single Python 3.9+ file with no dependencies. Every command prints JSON, except `html --raw`, which prints the HTML itself.
 
 ## When to use
 
@@ -68,6 +68,7 @@ likelyread track --id ID --subject "Proposal" --to maya@example.com \
 - Run `track` once the send is confirmed. `--sent-at` takes unix seconds, unix milliseconds (Gmail's `internalDate`) or ISO 8601 with a timezone. It accepts sends up to 30 days old and is idempotent, so it is safe to rerun.
 - Hits before the send time count as a draft preview, never as an open, so reviewing the draft is harmless.
 - Send one email per recipient if you need to know who opened. Several recipients on one email share one pixel.
+- `--to` accepts display names (`Maya H <maya@example.com>`); only the addresses are kept. `--id` must be the UUID printed by `likelyread pixel`.
 - `likelyread html` escapes the text, keeps paragraphs and line breaks, and turns bare URLs into real links. Check that the HTML part shows the same words as the text part.
 
 ## Reading results
@@ -76,7 +77,7 @@ likelyread track --id ID --subject "Proposal" --to maya@example.com \
 likelyread ls --campaign "Q4 outreach" --status opened     # also: not_opened, prefetch_only; --from, --q, --limit
 likelyread show ID                                         # every hit with kind, via and the reason
 likelyread campaigns                                       # open rate per campaign
-likelyread stats --campaign "Q4 outreach" --days 30
+likelyread stats --campaign "Q4 outreach" --days 30    # buckets use this machine's timezone; --tz to override
 likelyread set-campaign ID "Another campaign"
 ```
 

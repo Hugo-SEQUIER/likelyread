@@ -47,6 +47,18 @@ def test_split_addresses():
     assert lr.split_addresses(["A@x.com, b@y.com", "<c@z.com>", "a@x.com"]) == ["a@x.com", "b@y.com", "c@z.com"]
 
 
+def test_split_addresses_drops_display_names():
+    assert lr.split_addresses(["Maya H <maya@x.com>", '"Doe, John" <john@y.co.uk>; tom@z.io']) == [
+        "maya@x.com", "john@y.co.uk", "tom@z.io"]
+
+
+def test_ids_must_be_uuid4():
+    assert lr.checked_id("0F8FAD5B-D9CB-469F-A165-70867728950E") == "0f8fad5b-d9cb-469f-a165-70867728950e"
+    assert lr.UUID4_RE.match(lr.checked_id(None))
+    with pytest.raises(lr.CliError):
+        lr.checked_id('x" onerror="alert(1)')
+
+
 def test_config_env_overrides_file(tmp_path):
     f = tmp_path / "c.json"
     f.write_text(json.dumps({"url": "https://file.example/", "token": "filetoken"}))
@@ -132,10 +144,11 @@ def test_track_without_id_creates_one(server):
 
 def test_html_command_raw(server):
     env = {**os.environ, "LIKELYREAD_URL": server, "LIKELYREAD_TOKEN": TOKEN, "LIKELYREAD_CONFIG": "/nonexistent"}
-    p = subprocess.run([sys.executable, str(ROOT / "cli" / "likelyread.py"), "html", "--raw", "--id", "abc"],
+    pid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    p = subprocess.run([sys.executable, str(ROOT / "cli" / "likelyread.py"), "html", "--raw", "--id", pid],
                        input="Hello\n\nBye", capture_output=True, text=True, env=env)
     assert p.returncode == 0
-    assert "<p>Hello</p>" in p.stdout and f"{server}/p/abc.gif" in p.stdout
+    assert "<p>Hello</p>" in p.stdout and f"{server}/p/{pid}.gif" in p.stdout
 
 
 def test_set_campaign(server):

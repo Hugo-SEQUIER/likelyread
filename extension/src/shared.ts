@@ -40,7 +40,8 @@ export type Message =
   | { type: "register"; email: PendingEmail; account?: string | null }
   | { type: "suppress"; id: string }
   | { type: "setCampaign"; campaign: string }
-  | { type: "getConfig" };
+  | { type: "getConfig" }
+  | { type: "configChanged" };
 
 export const DEFAULT_SETTINGS: Settings = { serverUrl: "", token: "", trackByDefault: true, campaign: "" };
 

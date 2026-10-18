@@ -173,8 +173,23 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === FLUSH_ALARM || a.name === `${FLUSH_ALARM}-periodic`) void flush();
 });
 
+// Content scripts can read chrome.storage.local by default; the token lives there.
+// Restrict it to extension pages and the service worker. Gmail tabs get only the
+// token-free ContentConfig, by message.
+void chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => undefined);
+
+const CONTENT_KEYS = ["serverUrl", "token", "trackByDefault", "campaign", SENDERS_KEY, CAMPAIGN_CACHE_KEY];
+
+async function notifyGmailTabs(): Promise<void> {
+  const tabs = await chrome.tabs.query({ url: "https://mail.google.com/*" });
+  for (const t of tabs) {
+    if (t.id !== undefined) void chrome.tabs.sendMessage(t.id, { type: "configChanged" } satisfies Message).catch(() => undefined);
+  }
+}
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
+  if (CONTENT_KEYS.some((k) => k in changes)) void notifyGmailTabs().catch(() => undefined);
   if (changes.serverUrl) void syncBlockRules();
   if (changes.serverUrl || changes.token) {
     void chrome.storage.local.remove(CAMPAIGN_CACHE_KEY);
@@ -183,6 +198,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 function boot(): void {
+  // 0.2.0 kept send-as addresses in one global list; 0.2.1+ keeps them per account.
+  // The old list cannot be attributed to an account, so drop it: aliases are
+  // relearned on the next send from them.
+  void chrome.storage.local.remove("senders");
   void syncBlockRules();
   void flush();
   void chrome.alarms.create(`${FLUSH_ALARM}-periodic`, { periodInMinutes: 5 });

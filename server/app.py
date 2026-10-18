@@ -597,6 +597,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             opened = [s for s in items if s["opens"] > 0]
             last_opens = [s["last_open"] for s in opened]
             ttfo = [s["first_open"] - s["sent_at"] for s in opened if s["sent_at"] is not None]
+            sent = [s["sent_at"] for s in items if s["sent_at"] is not None]
             out.append(
                 {
                     "name": name,
@@ -605,13 +606,13 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
                     "open_rate": len(opened) / len(items) if items else 0,
                     "opens": sum(s["opens"] for s in items),
                     "prefetch_only": sum(1 for s in items if s["status"] == "prefetch_only"),
-                    "first_sent": min(s["sent_at"] for s in items),
-                    "last_sent": max(s["sent_at"] for s in items),
+                    "first_sent": min(sent) if sent else None,
+                    "last_sent": max(sent) if sent else None,
                     "last_open": max(last_opens) if last_opens else None,
                     "median_time_to_open": statistics.median(ttfo) if ttfo else None,
                 }
             )
-        out.sort(key=lambda c: c["last_sent"], reverse=True)
+        out.sort(key=lambda c: c["last_sent"] or 0, reverse=True)
         return out
 
     @app.get("/api/senders", dependencies=auth)
@@ -655,9 +656,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
                 if h["kind"] != "open":
                     continue
                 k = _day_key(h["ts"], tz)
-                if k in opens_by_day:
+                if k in opens_by_day:  # the hour chart honours the same window as the timeline
                     opens_by_day[k] += 1
-                opens_by_hour[_hour(h["ts"], tz)] += 1
+                    opens_by_hour[_hour(h["ts"], tz)] += 1
                 recent.append(
                     {
                         "email_id": s["id"],

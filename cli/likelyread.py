@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """likelyread: command line for agents and scripts. Python 3.9+, stdlib only.
 
-Every command prints JSON on stdout so an agent can parse it. Errors print
+Every command prints JSON on stdout so an agent can parse it (except
+`html --raw`, which prints the HTML itself). Errors print
 {"error": ...} on stderr and exit non-zero.
 
 Configuration, in order of precedence:
@@ -129,14 +130,36 @@ def parse_time(value: str | None) -> float | None:
     return dt.timestamp()
 
 
+EMAIL_RE = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+
+
 def split_addresses(values: list[str] | None) -> list[str]:
+    """Addresses from values like 'a@x.com, Maya H <maya@y.com>'. Display names are dropped."""
     out: list[str] = []
     for v in values or []:
-        for part in re.split(r"[,;\s]+", v):
-            part = part.strip().strip("<>").lower()
-            if part and part not in out:
-                out.append(part)
+        for addr in EMAIL_RE.findall(v):
+            addr = addr.lower()
+            if addr not in out:
+                out.append(addr)
     return out
+
+
+UUID4_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+
+def checked_id(value: str | None) -> str:
+    """A pixel id: a new UUIDv4, or the given one if it is a valid UUIDv4."""
+    if not value:
+        return new_id()
+    v = value.strip().lower()
+    if not UUID4_RE.match(v):
+        raise CliError(f"--id must be a UUIDv4 (as printed by `likelyread pixel`), got {value!r}")
+    return v
+
+
+def local_tz_minutes() -> int:
+    off = datetime.now().astimezone().utcoffset()
+    return int(off.total_seconds() // 60) if off else 0
 
 
 # ---------------------------------------------------------------- API
@@ -170,7 +193,7 @@ def api(cfg: dict, method: str, path: str, body: dict | None = None, query: dict
 
 def cmd_pixel(cfg: dict, a) -> dict:
     need(cfg, "url")
-    email_id = a.id or new_id()
+    email_id = checked_id(a.id)
     return {"id": email_id, "url": pixel_url(cfg["url"], email_id), "img": pixel_tag(cfg["url"], email_id)}
 
 
@@ -179,14 +202,14 @@ def cmd_html(cfg: dict, a) -> dict | str:
     tag = None
     if a.id:
         need(cfg, "url")
-        tag = pixel_tag(cfg["url"], a.id)
+        tag = pixel_tag(cfg["url"], checked_id(a.id))
     out = text_to_html(text, tag)
     return out if a.raw else {"id": a.id, "html": out}
 
 
 def cmd_track(cfg: dict, a) -> dict:
     need(cfg, "url")
-    email_id = (a.id or new_id()).lower()
+    email_id = checked_id(a.id)
     sent_at = parse_time(a.sent_at)
     age = 0.0 if sent_at is None else max(0.0, time.time() - sent_at)
     body = {
@@ -215,7 +238,7 @@ def cmd_campaigns(cfg: dict, a):
 
 
 def cmd_stats(cfg: dict, a):
-    return api(cfg, "GET", "/api/stats", query={"campaign": a.campaign, "sender": a.sender, "days": a.days, "tz": 0})
+    return api(cfg, "GET", "/api/stats", query={"campaign": a.campaign, "sender": a.sender, "days": a.days, "tz": local_tz_minutes() if a.tz is None else a.tz})
 
 
 def cmd_set_campaign(cfg: dict, a):
@@ -268,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--campaign")
     s.add_argument("--from", dest="sender")
     s.add_argument("--days", type=int, default=30)
+    s.add_argument("--tz", type=int, help="minutes east of UTC for daily and hourly buckets (default: this machine's)")
     s.set_defaults(fn=cmd_stats)
 
     s = sub.add_parser("set-campaign", help="move an email to another campaign (empty for none)")

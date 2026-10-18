@@ -33,6 +33,8 @@ interface ComposeState {
   eye: HTMLElement;
   picker: HTMLElement;
   pixelId: string | null;
+  /** The user changed the eye or the campaign here: config updates no longer override it. */
+  touched: boolean;
 }
 
 /** Quoted history in a reply. Pixels of earlier emails live here and must never be reused. */
@@ -81,9 +83,19 @@ export class ComposeTracker {
     this.safe(() => this.scanForOwnPixels());
   }
 
-  /** Re-render every control, e.g. after the configuration changed. */
+  /** Apply a new configuration. A compose window opened before the configuration
+   * arrived got placeholder defaults, so reseed the ones the user has not touched. */
   refresh(): void {
-    for (const st of this.composes.values()) this.safe(() => this.render(st));
+    const cfg = this.deps.getConfig();
+    for (const st of this.composes.values()) {
+      this.safe(() => {
+        if (!st.touched) {
+          st.enabled = cfg.trackByDefault || !!st.pixelId;
+          st.campaign = cfg.campaign || "";
+        }
+        this.render(st);
+      });
+    }
   }
 
   isEnabled(body: HTMLElement): boolean {
@@ -107,6 +119,7 @@ export class ComposeTracker {
       eye: this.doc.createElement("div"),
       picker: this.doc.createElement("div"),
       pixelId: existing,
+      touched: false,
     };
     this.buildControl(state);
     this.insertControl(state);
@@ -153,6 +166,7 @@ export class ComposeTracker {
     };
     act(eye, () => {
       state.enabled = !state.enabled;
+      state.touched = true;
       this.render(state);
     });
     act(picker, () => {
@@ -262,6 +276,7 @@ export class ComposeTracker {
 
   private choose(state: ComposeState, name: string): void {
     state.campaign = name;
+    state.touched = true;
     this.deps.setCampaign(name);
     this.closePicker();
     this.render(state);
