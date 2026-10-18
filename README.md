@@ -1,6 +1,6 @@
 # likelyread
 
-Self-hosted, open-source email open tracking for Gmail, for a single user. It tells you whether someone has **probably** opened an email you sent, with no third-party SaaS involved, and gives you a small dashboard to follow your campaigns.
+Self-hosted, open-source email open tracking for Gmail, for a single user. It tells you when someone opens an email you sent, with no third-party SaaS involved, and gives you a small dashboard to follow your campaigns.
 
 - One small server (FastAPI + SQLite) behind Caddy, started with `docker compose up`.
 - One Chrome extension that adds a tracking toggle to Gmail's compose window.
@@ -128,7 +128,7 @@ All settings live in `deploy/.env` (see `.env.example`):
 
 ## Known limitations
 
-An "open" means *probably opened*, never proof.
+An "open" means the tracking image loaded on the recipient's side. That is what every open tracker measures; Likelyread sets aside your own views and Apple's prefetches, but it cannot prove someone read every word.
 
 | Limitation | Effect |
 |---|---|

@@ -1,6 +1,6 @@
 ---
 name: likelyread
-description: Track whether emails you send were probably opened, with a self-hosted Likelyread server. Use when sending email that should carry open tracking, or when asked which sent emails or campaigns were opened.
+description: Track whether emails you send get opened, with a self-hosted Likelyread server. Use when sending email that should carry open tracking, or when asked which sent emails or campaigns were opened.
 license: MIT
 ---
 
@@ -82,7 +82,7 @@ likelyread set-campaign ID "Another campaign"
 
 ## How to interpret opens
 
-- An open means the email was **probably** read. Say "probably opened", never "read".
+- An open means the tracking image loaded on the recipient's side. Report it as "opened", never as "read".
 - Gmail loads images through its proxy and caches them, so repeat opens by Gmail users often do not show up.
 - Apple Mail Privacy Protection loads images on delivery. Those hits are `prefetch`, not opens.
 - Some mail apps block images, so `not_opened` does not prove the email was ignored.

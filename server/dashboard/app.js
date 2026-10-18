@@ -177,7 +177,7 @@ async function viewOverview(root) {
 
   root.append(
     h("section", { class: "headline" },
-      h("h1", {}, `${st.opened} of ${st.emails} emails`, h("br"), h("span", { class: "rate" }, "probably read")),
+      h("h1", {}, `${st.opened} of ${st.emails} emails`, h("br"), h("span", { class: "rate" }, "opened")),
       h("p", {}, `${pct(st.open_rate)} open rate${scope ? ` for ${scope}` : ""}. ${st.prefetch_only} only prefetched by Apple and ${st.self} of your own views were set aside.`),
     ),
     h("section", { class: "tiles" },
