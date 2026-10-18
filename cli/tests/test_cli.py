@@ -22,10 +22,10 @@ GMAIL_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 
 def test_text_to_html_keeps_the_copy_and_appends_the_pixel():
-    text = "Hello Maya,\n\nSee https://predella.studio/hospitality-places\n\nBest,\nHugo SEQUIER <me>\n"
+    text = "Hello Maya,\n\nSee https://example.com/portfolio\n\nBest,\nSam <me>\n"
     out = lr.text_to_html(text, lr.pixel_tag("https://t.x.com", "abc"))
     assert out.count("<p>") == 3
-    assert '<a href="https://predella.studio/hospitality-places">https://predella.studio/hospitality-places</a>' in out
+    assert '<a href="https://example.com/portfolio">https://example.com/portfolio</a>' in out
     assert "Best,<br>Hugo SEQUIER &lt;me&gt;" in out
     assert out.rstrip().endswith('style="display:none!important">\n</div>')
 
@@ -110,18 +110,18 @@ def test_agent_flow_pixel_then_track_after_send(server):
     _, px, _ = run(server, "pixel")
     sent_at = time.time() - 60  # the send happened a minute ago
     code, tr, _ = run(server, "track", "--id", px["id"], "--subject", "Proposal", "--to", "Maya@Harbourline.co",
-                      "--campaign", "Predella hospitality", "--from", "SequierH@predellastudio.com", "--sent-at", str(int(sent_at * 1000)))
+                      "--campaign", "Q4 outreach", "--from", "Sam@Example.com", "--sent-at", str(int(sent_at * 1000)))
     assert code == 0 and tr["registered"] and tr["age_seconds"] >= 59
     load_pixel(px["url"])  # the recipient opens it
     _, e, _ = run(server, "show", px["id"])
-    assert e["sender"] == "sequierh@predellastudio.com"
+    assert e["sender"] == "sam@example.com"
     assert e["recipients"] == ["maya@harbourline.co"]
     assert e["opens"] == 1 and e["self"] == 0
-    _, rows, _ = run(server, "ls", "--campaign", "Predella hospitality", "--status", "opened")
+    _, rows, _ = run(server, "ls", "--campaign", "Q4 outreach", "--status", "opened")
     assert [r["id"] for r in rows] == [px["id"]]
     _, camps, _ = run(server, "campaigns")
-    assert any(c["name"] == "Predella hospitality" and c["opened"] == 1 for c in camps)
-    _, st, _ = run(server, "stats", "--from", "sequierh@predellastudio.com")
+    assert any(c["name"] == "Q4 outreach" and c["opened"] == 1 for c in camps)
+    _, st, _ = run(server, "stats", "--from", "sam@example.com")
     assert st["emails"] == 1 and st["opened"] == 1
 
 
