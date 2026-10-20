@@ -1,10 +1,11 @@
 # likelyread
 
-Self-hosted, open-source email open tracking for Gmail, for a single user. It tells you when someone opens an email you sent, with no third-party SaaS involved, and gives you a small dashboard to follow your campaigns.
+Open-source email open tracking for Gmail. It tells you when someone opens an email you sent, explains why each open counted, and gives you a small dashboard to follow your campaigns.
 
-- One small server (FastAPI + SQLite) behind Caddy, started with `docker compose up`.
-- One Chrome extension that adds a tracking toggle to Gmail's compose window.
-- One token. No accounts, no multi-tenancy, nothing leaves your VPS.
+Two ways to use it:
+
+- **Likelyread Cloud** at [app.likelyread.com](https://app.likelyread.com): install the Chrome extension, sign in with Google, done. Free plan; Pro adds campaign analytics and full history. See [docs/CLOUD.md](docs/CLOUD.md).
+- **Self-hosted**: one small server (FastAPI + SQLite) behind Caddy, installed with one command. One token, every feature, nothing leaves your VPS. Instructions below.
 
 ![Dashboard overview](docs/screenshots/overview.png)
 

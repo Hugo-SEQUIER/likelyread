@@ -531,7 +531,8 @@ async function viewAccount(root) {
           if (!confirm("Sign out on every device, including the Chrome extension and agents?")) return;
           await api("/api/me/signout-all", { method: "POST" });
           logout();
-        } }, "Sign out everywhere")),
+        } }, "Sign out everywhere"),
+        h("button", { class: "btn", type: "button", onclick: exportData }, "Download my data")),
     ),
     h("div", { class: "danger-zone" },
       h("button", { class: "btn danger small", type: "button", onclick: async () => {
@@ -540,6 +541,17 @@ async function viewAccount(root) {
         logout();
       } }, "Delete my account and data")),
   ].filter(Boolean));
+}
+
+async function exportData() {
+  const res = await fetch("/api/me/export", { headers: { Authorization: "Bearer " + state.token } });
+  if (!res.ok) return alert(`Export failed: ${res.status}`);
+  const url = URL.createObjectURL(await res.blob());
+  const a = h("a", { href: url, download: "likelyread-export.json" });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 async function adminPanel() {

@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 from app import DB, FEATURES, Principal
@@ -460,6 +460,32 @@ class Cloud:
         def delete_me(p: Principal = Depends(principal)):
             self.delete_account(p.account_id or "")
             return {"ok": True}
+
+        @app.get("/api/me/export")
+        def export_me(p: Principal = Depends(principal)):
+            """Everything we hold for the account, as JSON (data portability)."""
+            row = self.account(p.account_id or "")
+            emails = [dict(r) for r in self.db.query(
+                "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails WHERE account_id = ? ORDER BY sent_at",
+                (row["id"],),
+            )]
+            hits: dict[str, list] = {}
+            ids = [e["id"] for e in emails]
+            for i in range(0, len(ids), 500):
+                chunk = ids[i : i + 500]
+                marks = ",".join("?" * len(chunk))
+                for h in self.db.query(f"SELECT email_id, ts, ip, ua FROM hits WHERE email_id IN ({marks}) ORDER BY ts", chunk):
+                    hits.setdefault(h["email_id"], []).append({"ts": h["ts"], "ip": h["ip"], "ua": h["ua"]})
+            for e in emails:
+                e["recipients"] = json.loads(e["recipients"] or "[]")
+                e["hits"] = hits.get(e["id"], [])
+            account = {k: row[k] for k in ("email", "created_at", "plan", "plan_until", "subscription_status")}
+            body = json.dumps({"exported_at": time.time(), "account": account, "emails": emails}, indent=1)
+            return Response(
+                content=body,
+                media_type="application/json",
+                headers={"Content-Disposition": 'attachment; filename="likelyread-export.json"'},
+            )
 
         @app.post("/api/me/signout-all")
         def signout_all(p: Principal = Depends(principal)):

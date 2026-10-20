@@ -6,7 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py cloud.py ./
 COPY dashboard ./dashboard
 
 RUN groupadd --system --gid 10001 likelyread && useradd --system --uid 10001 --gid 10001 likelyread && mkdir -p /data

@@ -277,6 +277,20 @@ def test_delete_account_removes_everything(client, fake):
     assert client.get("/api/me", headers=H(a)).status_code == 401
 
 
+def test_export_contains_only_my_data(client, fake):
+    a = sign_in(client, fake, "g-a", "a@x.com")
+    b = sign_in(client, fake, "g-b", "b@x.com")
+    _, eid = register(client, a, subject="mine")
+    register(client, b, subject="theirs")
+    client.get(f"/p/{eid}.gif", headers={"User-Agent": "UA"})
+    r = client.get("/api/me/export", headers=H(a))
+    assert r.headers["content-disposition"].startswith("attachment")
+    data = r.json()
+    assert data["account"]["email"] == "a@x.com"
+    assert [e["subject"] for e in data["emails"]] == ["mine"]
+    assert data["emails"][0]["hits"][0]["ua"] == "UA"
+
+
 def test_sign_out_everywhere(client, fake):
     a = sign_in(client, fake)
     a2 = sign_in(client, fake)
