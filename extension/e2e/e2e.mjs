@@ -58,6 +58,14 @@ const ctx = await chromium.launchPersistentContext(path.join(WORK, "profile"), {
 try {
   let [sw] = ctx.serviceWorkers();
   if (!sw) sw = await ctx.waitForEvent("serviceworker");
+  // Anything that would show up under "Errors" on chrome://extensions fails the run.
+  const errors = [];
+  const watch = (p, where) => {
+    p.on("console", (m) => { if (m.type() === "error") errors.push(`${where}: ${m.text()}`); });
+    p.on("pageerror", (e) => errors.push(`${where}: ${e.message}`));
+  };
+  sw.on("console", (m) => { if (m.type() === "error") errors.push(`service worker: ${m.text()}`); });
+  ctx.on("page", (p) => watch(p, new URL(p.url() || "about:blank").pathname || "page"));
   const extId = new URL(sw.url()).host;
   startServer(`chrome-extension://${extId}`);
   await waitUp();
@@ -126,6 +134,9 @@ try {
   let e2 = null;
   for (let i = 0; i < 150 && !(e2 && e2.id); i++) { await sleep(500); e2 = await api(`/api/emails/${id2}`).catch(() => null); }
   check("server back: queued registration flushed by the retry alarm", e2 && e2.id === id2, `after ${Math.round((Date.now() - t0) / 1000)} s`);
+  // Expected while we deliberately use a wrong token or stop the server: network failures.
+  const unexpected = errors.filter((x) => !/401|Failed to fetch|ERR_CONNECTION_REFUSED|net::/.test(x));
+  check("no extension errors in the console", unexpected.length === 0, unexpected.slice(0, 3).join(" | "));
 } catch (err) {
   check("e2e run", false, String(err && err.stack || err));
 } finally {
