@@ -1,4 +1,4 @@
-import { normalizeServerUrl } from "../lib";
+import { normalizeServerUrl, parseSetupLink } from "../lib";
 import { ApiError, apiFetch, getSettings, saveSettings, type Settings } from "../shared";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -48,6 +48,28 @@ async function main(): Promise<void> {
   $<HTMLInputElement>("token").value = s.token;
   $<HTMLInputElement>("trackByDefault").checked = s.trackByDefault;
   $<HTMLInputElement>("campaign").value = s.campaign;
+
+  const link = $<HTMLInputElement>("setupLink");
+  const hint = $("linkHint");
+  link.addEventListener("input", () => {
+    if (!link.value.trim()) {
+      hint.textContent = "It fills in the address and token below.";
+      hint.className = "hint";
+      return;
+    }
+    const parsed = parseSetupLink(link.value);
+    if (!parsed) {
+      hint.textContent = "That does not look like a setup link. It ends with #connect= followed by your token.";
+      hint.className = "hint error";
+      return;
+    }
+    $<HTMLInputElement>("serverUrl").value = parsed.serverUrl;
+    $<HTMLInputElement>("token").value = parsed.token;
+    link.value = "";
+    hint.textContent = `Filled in for ${new URL(parsed.serverUrl).host}. Click Save.`;
+    hint.className = "hint ok";
+    $<HTMLButtonElement>("save").focus();
+  });
 
   $("form").addEventListener("submit", async (e) => {
     e.preventDefault();

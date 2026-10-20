@@ -162,3 +162,12 @@ tr.dimrow td { color: var(--muted); }
   .topbar-right select { flex: 1; max-width: none; }
   .filters input { width: 100%; }
 }
+
+/* connect */
+.link-field { width: min(520px, 100%); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.connect-steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.connect-step { background: var(--surface); padding: 18px; display: grid; grid-template-columns: auto 1fr; gap: 14px; }
+.connect-step:nth-child(even) { background: var(--surface-2); }
+.connect-n { font-size: 28px; line-height: 1; font-weight: 600; color: var(--accent); }
+.connect-step h3 { font-size: 18px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.02em; }
+@media (max-width: 900px) { .connect-steps { grid-template-columns: 1fr; } }

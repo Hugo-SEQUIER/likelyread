@@ -19,6 +19,10 @@ button:active { transform: scale(0.97); }
 button.primary { background: var(--accent); color: #fff; }
 button.primary:hover { background: var(--accent-strong); }
 button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { margin: 2px 0 0; font-size: 14px; color: var(--muted); }
+.hint.ok { color: var(--ink); }
+.hint.error { color: var(--accent-deep); }
+#setupLink { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
 #status { min-height: 1.5em; margin: 12px 0 0; font-weight: 500; }
 #status.ok { color: var(--ink); }
 #status.ok::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: 0.1em; }

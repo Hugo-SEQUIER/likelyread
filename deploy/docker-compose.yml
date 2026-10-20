@@ -1,3 +1,7 @@
+# Compose project name, so the containers are likelyread-server-1 and likelyread-caddy-1
+# whatever the directory is called.
+name: likelyread
+
 services:
   server:
     build: ../server

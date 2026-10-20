@@ -31,7 +31,7 @@ async function main(): Promise<void> {
     const link = h("a", null, "Open the options");
     link.href = "#";
     link.addEventListener("click", () => chrome.runtime.openOptionsPage());
-    list.replaceChildren(h("p", "note", "Likelyread is not set up yet. ", link, " and enter your server address and token."));
+    list.replaceChildren(h("p", "note", "Likelyread is not set up yet. ", link, " and paste your setup link."));
     return;
   }
   dash.href = `${settings.serverUrl}/`;

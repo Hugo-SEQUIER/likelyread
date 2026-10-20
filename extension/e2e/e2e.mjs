@@ -74,6 +74,17 @@ try {
   check("bad token shows an error in the extension", /Invalid token/.test(err || ""), `"${(err || "").trim()}"`);
   check("bad token gets 401 from the API", (await fetch(API + "/api/ping", { headers: { Authorization: "Bearer wrong" } })).status === 401);
 
+  // setup link: one paste fills the address and the token
+  const o2 = await ctx.newPage();
+  await o2.goto(`chrome-extension://${extId}/options.html`);
+  await o2.fill("#setupLink", `https://t.example.com/#connect=${TOKEN}`);
+  check("setup link fills address and token",
+    (await o2.inputValue("#serverUrl")) === "https://t.example.com" && (await o2.inputValue("#token")) === TOKEN && (await o2.inputValue("#setupLink")) === "",
+    `"${await o2.textContent("#linkHint")}"`);
+  await o2.fill("#setupLink", "https://t.example.com/");
+  check("a wrong link is explained", /does not look like a setup link/.test(await o2.textContent("#linkHint")));
+  await o2.close();
+
   // configure with the right token via the service worker (extension context)
   await sw.evaluate(async ([u, t]) => chrome.storage.local.set({ serverUrl: u, token: t, trackByDefault: true, campaign: "E2E campaign" }), [API, TOKEN]);
   await opt.close();

@@ -19,19 +19,16 @@ Do not use it for emails the user sends by hand from Gmail in Chrome: the Likely
 
 ## Setup (once)
 
-The user needs a running Likelyread server (see the repository README: `docker compose up -d` on a VPS with a domain). Then:
+The user needs a running Likelyread server. If they have none, it is one command on their server (`curl -fsSL https://raw.githubusercontent.com/Hugo-SEQUIER/likelyread/main/deploy/install.sh | sudo bash`, see the README); it prints a **setup link** like `https://t.example.com/#connect=TOKEN`. Then:
 
 ```bash
-# from a clone of the repository
+# from a clone of the repository (the installer also puts it in /opt/likelyread/cli)
 ln -sf "$PWD/cli/likelyread.py" ~/.local/bin/likelyread
-mkdir -p ~/.config/likelyread && chmod 700 ~/.config/likelyread
-# write the config; ask the user for the token, never invent one
-cat > ~/.config/likelyread/config.json <<'EOF'
-{"url": "https://t.example.com", "token": "PASTE_TOKEN_HERE"}
-EOF
-chmod 600 ~/.config/likelyread/config.json
+likelyread setup 'https://t.example.com/#connect=TOKEN'   # tests the connection, saves the config (mode 600)
 likelyread ping
 ```
+
+Ask the user for the setup link; never invent one. On the server itself, add `--api-url http://127.0.0.1:PORT` only if the API is reachable locally.
 
 - `url` is the public address recipients load the pixel from. It must be stable: every sent email keeps it forever. Do not use a temporary tunnel address for real email.
 - Optional `api_url` (for example `http://127.0.0.1:8100`) if the agent runs on the same machine as the server.

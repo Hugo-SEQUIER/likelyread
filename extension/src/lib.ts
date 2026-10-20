@@ -40,6 +40,20 @@ export function extractPixelId(src: string, server: string): string | null {
 }
 
 /** Retry delay: 30s, 1m, 2m, 4m ... capped at 6h. */
+/** Parse a setup link (https://server/#connect=TOKEN) into its server URL and token. */
+export function parseSetupLink(text: string): { serverUrl: string; token: string } | null {
+  const raw = text.trim();
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  const m = url.hash.match(/^#connect=([A-Za-z0-9._~-]{16,})$/);
+  const serverUrl = normalizeServerUrl(url.origin);
+  return m && serverUrl ? { serverUrl, token: m[1] } : null;
+}
+
 export function backoffMs(attempts: number): number {
   return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 6 * 3600 * 1000);
 }

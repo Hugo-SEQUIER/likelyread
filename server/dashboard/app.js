@@ -351,10 +351,46 @@ async function viewEmail(root, id) {
   );
 }
 
+function viewConnect(root) {
+  const link = `${location.origin}/#connect=${state.token}`;
+  const field = h("input", { type: "password", value: link, readonly: true, "aria-label": "Setup link", class: "link-field" });
+  const msg = h("span", { class: "muted small" });
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      msg.textContent = "Copied.";
+    } catch {
+      field.type = "text";
+      field.select();
+      msg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
+    }
+  };
+  const step = (n, title, body) => h("li", { class: "connect-step" }, h("span", { class: "connect-n" }, n), h("div", {}, h("h3", {}, title), body));
+  root.append(
+    h("section", { class: "headline" },
+      h("h1", {}, "Connect", h("br"), h("span", { class: "rate" }, "your tools")),
+      h("p", {}, "One setup link connects the Chrome extension, an AI agent or a script to this server. It contains your private token: treat it like a password."),
+    ),
+    h("section", {},
+      sectionHead("Your setup link"),
+      h("div", { class: "inline-form" },
+        field,
+        h("button", { class: "btn primary", type: "button", onclick: copy }, "Copy link"),
+        h("button", { class: "btn ghost", type: "button", onclick: () => { field.type = field.type === "password" ? "text" : "password"; } }, "Show"),
+        msg),
+    ),
+    h("ol", { class: "connect-steps" },
+      step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension, open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
+      step("2", "AI agents and scripts", h("p", {}, "Run ", h("code", {}, "likelyread setup 'LINK'"), " once on the machine, with the link above. The agent skill in the repository explains the rest.")),
+      step("3", "Another browser", h("p", {}, "Open the setup link there to sign in to this dashboard.")),
+    ),
+  );
+}
+
 function emptyState() {
   return h("section", { class: "headline" },
     h("h1", {}, "Nothing tracked", h("br"), h("span", { class: "rate" }, "yet")),
-    h("p", {}, "Install the Likelyread Chrome extension, enter this server's address and token in its options, then send an email from Gmail with the eye switched on."));
+    h("p", {}, "Install the Likelyread Chrome extension and paste your setup link in its settings (see Connect), then send an email from Gmail with the red eye on."));
 }
 
 // ---------------------------------------------------------------- router
@@ -371,7 +407,8 @@ async function render() {
   try {
     await loadFilters();
     const frag = h("div", {});
-    if (section === "campaigns") await viewCampaigns(frag);
+    if (section === "connect") viewConnect(frag);
+    else if (section === "campaigns") await viewCampaigns(frag);
     else if (section === "emails") await viewEmails(frag, params);
     else if (section === "email" && arg) await viewEmail(frag, arg);
     else if (!state.campaigns.length) frag.append(emptyState());
@@ -384,6 +421,23 @@ async function render() {
 }
 
 // ---------------------------------------------------------------- boot
+
+/** Sign in from a setup link (https://server/#connect=TOKEN), on load or when the
+ * fragment changes. The token is in the fragment, so it never travels in a request;
+ * it is removed from the address bar. Returns false when the link was rejected. */
+async function connectFromLink() {
+  const m = location.hash.match(/^#connect=([A-Za-z0-9._~-]{16,})$/);
+  if (!m) return true;
+  history.replaceState(null, "", "/#/connect");
+  try {
+    await login(m[1], false);
+    return true;
+  } catch (err) {
+    state.token = null;
+    showLogin(err instanceof AuthError ? "This setup link is not valid for this server." : `Could not reach the server: ${err.message}`);
+    return false;
+  }
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("login-form").addEventListener("submit", async (ev) => {
@@ -413,8 +467,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.sender = e.target.value;
     render();
   });
-  window.addEventListener("hashchange", render);
+  window.addEventListener("hashchange", async () => {
+    if (!(await connectFromLink())) return;
+    if (!state.token) return showLogin();
+    document.getElementById("login").hidden = true;
+    document.getElementById("shell").hidden = false;
+    await render();
+  });
 
+  if (!(await connectFromLink())) return;
   state.token = loadToken();
   if (!state.token) return showLogin();
   document.getElementById("shell").hidden = false;

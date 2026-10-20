@@ -5,6 +5,9 @@ Every command prints JSON on stdout so an agent can parse it (except
 `html --raw`, which prints the HTML itself). Errors print
 {"error": ...} on stderr and exit non-zero.
 
+Quickest setup: `likelyread setup 'https://your-server/#connect=TOKEN'` with the
+setup link printed by the installer (also on the dashboard, under Connect).
+
 Configuration, in order of precedence:
   env    LIKELYREAD_URL       public base URL that recipients load the pixel from
          LIKELYREAD_API_URL   where to call the API (default: LIKELYREAD_URL);
@@ -245,6 +248,36 @@ def cmd_set_campaign(cfg: dict, a):
     return api(cfg, "PATCH", f"/api/emails/{urllib.parse.quote(a.id)}", {"campaign": a.campaign or None})
 
 
+SETUP_RE = re.compile(r"^#connect=([A-Za-z0-9._~-]{16,})$")
+
+
+def parse_setup_link(link: str) -> tuple[str, str]:
+    """(base_url, token) from https://server/#connect=TOKEN."""
+    u = urllib.parse.urlsplit(link.strip())
+    m = SETUP_RE.match("#" + u.fragment) if u.fragment else None
+    if u.scheme != "https" or not u.netloc or not m:
+        raise CliError("not a setup link: expected https://your-server/#connect=TOKEN")
+    return f"https://{u.netloc}", m.group(1)
+
+
+def cmd_setup(cfg: dict, a) -> dict:
+    url, token = parse_setup_link(a.link)
+    path = Path(os.environ.get("LIKELYREAD_CONFIG") or Path.home() / ".config" / "likelyread" / "config.json")
+    data = {"url": url, "token": token}
+    if a.api_url:
+        data["api_url"] = a.api_url.rstrip("/")
+    new_cfg = {"url": url, "api_url": data.get("api_url", url), "token": token}
+    if not a.no_check:
+        api(new_cfg, "GET", "/api/ping")  # fails with a clear error before anything is written
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=2)
+    os.chmod(path, 0o600)
+    return {"ok": True, "config": str(path), "url": url, "api_url": new_cfg["api_url"], "checked": not a.no_check}
+
+
 def cmd_ping(cfg: dict, a):
     return {"ok": True, "api_url": cfg["api_url"], "pixel_url": cfg["url"], "server": api(cfg, "GET", "/api/ping")}
 
@@ -300,6 +333,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_set_campaign)
 
     sub.add_parser("ping", help="check configuration and token").set_defaults(fn=cmd_ping)
+
+    s = sub.add_parser("setup", help="save the configuration from a setup link (https://server/#connect=TOKEN)")
+    s.add_argument("link")
+    s.add_argument("--api-url", help="call the API here instead, e.g. http://127.0.0.1:8100 on the server itself")
+    s.add_argument("--no-check", action="store_true", help="save without testing the connection")
+    s.set_defaults(fn=cmd_setup)
     return p
 
 

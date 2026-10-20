@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Likelyread",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Self-hosted email open tracking for Gmail. Your data stays on your own server.",
   "permissions": ["storage", "declarativeNetRequest", "alarms"],
   "host_permissions": ["https://mail.google.com/*"],

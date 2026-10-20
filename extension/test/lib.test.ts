@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backoffMs, cleanRecipients, dnrRules, extractPixelId, normalizeServerUrl, pixelUrl } from "../src/lib";
+import { backoffMs, cleanRecipients, dnrRules, extractPixelId, normalizeServerUrl, parseSetupLink, pixelUrl } from "../src/lib";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
@@ -38,4 +38,14 @@ test("dnrRules block only the direct pixel, never Gmail's proxied copy", () => {
   const rules = dnrRules("https://t.example.com");
   assert.equal(rules.length, 1, "blocking the proxy would hide real opens in this browser");
   assert.equal(rules[0].condition.urlFilter, "|https://t.example.com/p/");
+});
+
+test("parseSetupLink reads the server and token from a setup link", () => {
+  const tok = "0123456789abcdef0123456789abcdef";
+  assert.deepEqual(parseSetupLink(`  https://t.example.com/#connect=${tok}\n`), { serverUrl: "https://t.example.com", token: tok });
+  assert.deepEqual(parseSetupLink(`https://t.example.com:8443/#connect=${tok}`), { serverUrl: "https://t.example.com:8443", token: tok });
+  assert.equal(parseSetupLink("https://t.example.com/"), null);
+  assert.equal(parseSetupLink("https://t.example.com/#connect=short"), null);
+  assert.equal(parseSetupLink(`http://t.example.com/#connect=${tok}`), null, "plain http is refused");
+  assert.equal(parseSetupLink("not a link"), null);
 });

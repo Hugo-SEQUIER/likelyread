@@ -21,35 +21,51 @@ See [SPEC.md](SPEC.md) for the full contract.
 
 ## Setup
 
-You need a VPS (512 MB is plenty), Docker with the compose plugin, and a (sub)domain.
+You need a small Linux server (Ubuntu or Debian, 512 MB of RAM is plenty) with ports 80 and 443 open.
 
-1. Point a DNS record such as `t.example.com` at the VPS.
-2. Configure:
-   ```sh
-   git clone https://github.com/Hugo-SEQUIER/likelyread.git
-   cd likelyread/deploy
-   cp .env.example .env
-   # set DOMAIN=t.example.com and LIKELYREAD_TOKEN=$(openssl rand -hex 32)
-   ```
-3. Start it:
-   ```sh
-   docker compose up -d
-   curl https://t.example.com/healthz   # {"ok":true}
-   ```
-   Caddy gets a Let's Encrypt certificate automatically (ports 80 and 443 must be open).
-4. Build and load the extension:
-   ```sh
-   cd ../extension
-   npm install
-   npm run build
-   ```
-   In Chrome, open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked** and select `extension/dist`.
-5. The options page opens. Enter `https://t.example.com` and your token, click **Save** (Chrome asks for permission to contact your server), then **Test connection**.
-6. Open the dashboard at `https://t.example.com/` and sign in with the same token.
+**1. Pick an address.** Use a subdomain of a domain you own, for example `t.yourcompany.com`: add an A record pointing to the server's IP (on Cloudflare, set it to DNS only, grey cloud). No domain yet? The installer can use a free `<your-ip>.sslip.io` address to try it out. For real email use your own domain: spam filters trust it more, and it keeps working if you move servers.
+
+**2. Run one command on the server:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Hugo-SEQUIER/likelyread/main/deploy/install.sh | sudo bash
+```
+
+It installs Docker if needed, asks for your address, creates a private token, gets an HTTPS certificate and starts everything in `/opt/likelyread`. At the end it prints your **setup link**:
+
+```
+https://t.yourcompany.com/#connect=<your token>
+```
+
+Treat it like a password. You can print it again any time with `sudo bash /opt/likelyread/deploy/install.sh --show-link`, and it is on the dashboard under **Connect**.
+
+**3. Connect the extension.** Install the Chrome extension, open its settings, paste the setup link and click **Save**. Write an email in Gmail: the red eye next to Send means it is tracked.
+
+Until the extension is on the Chrome Web Store, build and load it yourself: `cd extension && npm install && npm run build`, then in `chrome://extensions` turn on **Developer mode**, click **Load unpacked** and pick `extension/dist`.
+
+**4. Open the dashboard.** Open the setup link in your browser: it signs you in.
+
+Non-interactive install, for example from a provisioning script: `sudo bash install.sh --domain t.yourcompany.com --yes`. See `install.sh --help` for all options.
+
+<details>
+<summary>Manual setup without the installer</summary>
+
+```sh
+git clone https://github.com/Hugo-SEQUIER/likelyread.git
+cd likelyread/deploy
+cp .env.example .env
+# set DOMAIN=t.example.com and LIKELYREAD_TOKEN=$(openssl rand -hex 32)
+docker compose up -d
+curl https://t.example.com/healthz   # {"ok":true}
+```
+
+Your setup link is `https://DOMAIN/#connect=LIKELYREAD_TOKEN`.
+
+</details>
 
 ### Backups
 
-Everything is in `deploy/data/likelyread.db`. A safe online copy from cron:
+Everything is in `/opt/likelyread/deploy/data/likelyread.db` (`deploy/data/` for a manual setup). A safe online copy from cron:
 
 ```sh
 sqlite3 /path/to/deploy/data/likelyread.db ".backup '/backups/likelyread-$(date +%F).db'"
@@ -57,9 +73,7 @@ sqlite3 /path/to/deploy/data/likelyread.db ".backup '/backups/likelyread-$(date 
 
 ### Updating
 
-```sh
-git pull && cd deploy && docker compose up -d --build
-```
+Run the install command again. It keeps your address, token and data.
 
 ## Campaigns and the dashboard
 
@@ -91,9 +105,7 @@ Anything that sends email itself (a script, a cron job, an AI agent) can use the
 
 ```bash
 ln -s "$PWD/cli/likelyread.py" ~/.local/bin/likelyread
-export LIKELYREAD_URL=https://t.example.com   # what recipients load the pixel from
-export LIKELYREAD_TOKEN=...                   # or ~/.config/likelyread/config.json (mode 600)
-likelyread ping
+likelyread setup 'https://t.example.com/#connect=...'   # your setup link; saves ~/.config/likelyread/config.json (mode 600)
 ```
 
 Draft now, send later:

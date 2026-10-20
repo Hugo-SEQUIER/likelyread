@@ -11,8 +11,11 @@
   <main>
     <p class="wordmark">likelyread</p>
     <h1>Connect your server</h1>
-    <p class="lead">The address of your Likelyread server and its token, <code>LIKELYREAD_TOKEN</code> in your <code>.env</code>.</p>
+    <p class="lead">Paste the setup link the installer printed. You also find it on your dashboard, under Connect.</p>
     <form id="form">
+      <label for="setupLink">Setup link</label>
+      <input id="setupLink" placeholder="https://t.example.com/#connect=…" autocomplete="off" spellcheck="false">
+      <p class="hint" id="linkHint">It fills in the address and token below.</p>
       <label for="serverUrl">Server address</label>
       <input id="serverUrl" placeholder="https://t.example.com" required>
       <label for="token">Token</label>
@@ -21,7 +24,7 @@
       <label for="campaign">Campaign for new emails (optional)</label>
       <input id="campaign" placeholder="e.g. Q4 outreach" maxlength="100">
       <div class="actions">
-        <button type="submit" class="primary">Save</button>
+        <button type="submit" class="primary" id="save">Save</button>
         <button type="button" id="test">Test connection</button>
       </div>
       <p id="status" role="status"></p>

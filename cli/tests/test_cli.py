@@ -156,3 +156,22 @@ def test_set_campaign(server):
     run(server, "set-campaign", tr["id"], "B")
     _, e, _ = run(server, "show", tr["id"])
     assert e["campaign"] == "B"
+
+
+def test_parse_setup_link():
+    tok = "0123456789abcdef0123456789abcdef"
+    assert lr.parse_setup_link(f" https://t.example.com/#connect={tok} ") == ("https://t.example.com", tok)
+    assert lr.parse_setup_link(f"https://t.example.com:8443/#connect={tok}") == ("https://t.example.com:8443", tok)
+    for bad in ("https://t.example.com/", f"http://t.example.com/#connect={tok}", "https://t.example.com/#connect=short", "nope"):
+        with pytest.raises(lr.CliError):
+            lr.parse_setup_link(bad)
+
+
+def test_setup_writes_a_private_config(tmp_path, monkeypatch, capsys):
+    tok = "0123456789abcdef0123456789abcdef"
+    cfg = tmp_path / "cfg" / "config.json"
+    monkeypatch.setenv("LIKELYREAD_CONFIG", str(cfg))
+    assert lr.main(["setup", f"https://t.example.com/#connect={tok}", "--no-check"]) == 0
+    assert json.loads(cfg.read_text()) == {"url": "https://t.example.com", "token": tok}
+    assert oct(cfg.stat().st_mode & 0o777) == "0o600"
+    assert tok not in capsys.readouterr().out, "the token is never printed"
