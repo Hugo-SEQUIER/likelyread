@@ -173,7 +173,8 @@ try {
   check("free overview shows the Pro upsell", await tab.isVisible(".upsell"));
   await shot(tab, "4-free-overview");
   await tab.click('[data-tab="campaigns"]');
-  await tab.waitForSelector(".upsell", { timeout: 5000 });
+  // The overview's own upsell stays on screen until the view switches, so wait for this one.
+  await tab.waitForSelector("text=Compare your campaigns", { timeout: 5000 }).catch(() => {});
   check("campaign analytics are Pro", await tab.isVisible("text=Compare your campaigns"));
   await tab.click('[data-tab="emails"]');
   await tab.waitForSelector("table", { timeout: 5000 });
