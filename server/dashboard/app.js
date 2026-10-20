@@ -4,7 +4,9 @@
 
 const TOKEN_KEY = "likelyread.token";
 const NO_CAMPAIGN = "__none__";
-const state = { token: null, campaign: "", sender: "", campaigns: [], senders: [] };
+const state = { token: null, campaign: "", sender: "", campaigns: [], senders: [], config: { mode: "selfhost" }, me: null };
+const isCloud = () => state.config.mode === "cloud";
+const can = (feature) => !state.me || !state.me.features || state.me.features[feature] !== false;
 
 // ---------------------------------------------------------------- helpers
 
@@ -70,13 +72,19 @@ function statusChip(e) {
 // ---------------------------------------------------------------- API
 
 class AuthError extends Error {}
+class ProError extends Error {}
 
 async function api(path, opts = {}) {
   const headers = { Authorization: "Bearer " + state.token };
   if (opts.body) headers["Content-Type"] = "application/json";
   const res = await fetch(path, { ...opts, headers });
   if (res.status === 401) throw new AuthError("Invalid token");
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (res.status === 402) throw new ProError("This needs Likelyread Pro");
+  if (!res.ok) {
+    let detail = "";
+    try { const j = await res.json(); detail = typeof j.detail === "string" ? j.detail : ""; } catch { /* not JSON */ }
+    throw new Error(detail || `${res.status} ${res.statusText}`);
+  }
   const data = await res.json();
   return { data, total: Number(res.headers.get("X-Total-Count") || 0) };
 }
@@ -93,19 +101,25 @@ function showLogin(message) {
   document.getElementById("shell").hidden = true;
   document.getElementById("login").hidden = false;
   document.getElementById("login-error").textContent = message || "";
-  document.getElementById("token-input").focus();
+  const cloud = isCloud();
+  document.getElementById("login-cloud").hidden = !cloud;
+  document.getElementById("login-token").hidden = cloud;
+  document.getElementById("token-input").required = !cloud;
+  if (!cloud) document.getElementById("token-input").focus();
 }
 
 function logout() {
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(TOKEN_KEY);
   state.token = null;
+  state.me = null;
   showLogin();
 }
 
 async function login(token, remember) {
   state.token = token;
   await api("/api/ping");
+  state.me = null;
   sessionStorage.setItem(TOKEN_KEY, token);
   if (remember) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
@@ -113,7 +127,28 @@ async function login(token, remember) {
 
 // ---------------------------------------------------------------- filters
 
+async function loadMe() {
+  if (state.me) return state.me;
+  const { data } = await api("/api/me");
+  state.me = data;
+  document.querySelector('[data-tab="account"]').hidden = !isCloud();
+  return data;
+}
+
 async function loadFilters() {
+  await loadMe();
+  if (!can("campaigns")) {
+    // Free plan: emails can carry a campaign, the analytics are Pro.
+    const { data: names } = await api("/api/campaign-names");
+    state.campaigns = names.map((name) => ({ name }));
+    state.senders = [];
+    state.campaign = "";
+    state.sender = "";
+    document.getElementById("campaign-filter").hidden = true;
+    document.getElementById("sender-filter").hidden = true;
+    return;
+  }
+  document.getElementById("campaign-filter").hidden = false;
   const [{ data: campaigns }, { data: senders }] = await Promise.all([api("/api/campaigns"), api("/api/senders")]);
   state.campaigns = campaigns;
   state.senders = senders;
@@ -209,7 +244,54 @@ async function viewOverview(root) {
   );
 }
 
+/** Free plan overview, from the email list alone. Charts are Pro. */
+async function viewOverviewFree(root) {
+  const { data, total } = await api("/api/emails?limit=1000");
+  if (!total) return root.append(emptyState());
+  const opened = data.filter((e) => e.opens > 0);
+  const recent = [...opened].sort((a, b) => b.last_open - a.last_open).slice(0, 10);
+  root.append(
+    h("section", { class: "headline" },
+      h("h1", {}, `${opened.length} of ${data.length} emails`, h("br"), h("span", { class: "rate" }, "opened")),
+      h("p", {}, `In the last ${state.me.features.history_days} days. Every open is listed with its time and how it was loaded.`),
+    ),
+    h("section", { class: "split" },
+      upsell("charts", "See what works", ["Open rate per campaign and per sending address", "30-day timeline and busiest hours", "Median time to first open", "Your full history, not only 30 days"]),
+      h("div", {},
+        sectionHead("Recent opens"),
+        recent.length
+          ? h("ul", { class: "bands" }, recent.map((e) =>
+              h("li", {},
+                h("a", { href: `#/email/${e.id}` }, e.subject || "(no subject)"),
+                h("span", { class: "when", title: fmtDate(e.last_open) }, relTime(e.last_open)),
+                h("span", { class: "sub" }, [e.recipients[0], `${e.opens} open${e.opens === 1 ? "" : "s"}`].filter(Boolean).join(" · ")),
+              )))
+          : h("p", { class: "empty" }, "No opens yet."),
+      ),
+    ),
+  );
+}
+
+function upsell(feature, title, points) {
+  const me = state.me || {};
+  const prices = me.prices || state.config.prices || {};
+  return h("div", { class: "upsell", dataset: { feature } },
+    h("p", { class: "eyebrow" }, "Likelyread Pro"),
+    h("h2", {}, title),
+    h("ul", {}, points.map((p) => h("li", {}, p))),
+    h("p", { class: "muted small" }, `${prices.pro_monthly || "$5"} a month, or ${prices.pro_yearly || "$36"} a year.`),
+    h("a", { class: "btn primary", href: "#/account" }, "Upgrade"),
+  );
+}
+
 async function viewCampaigns(root) {
+  if (!can("campaigns")) {
+    root.append(h("section", { class: "headline" },
+      h("h1", {}, "Campaigns", h("br"), h("span", { class: "rate" }, "on Pro")),
+      h("p", {}, "You can already pick a campaign in Gmail's compose window. Pro shows how each one performs.")),
+      upsell("campaigns", "Compare your campaigns", ["Open rate, opens and time to open per campaign", "Filter every view by campaign or sending address", "Rename and merge campaigns", "Unlimited history"]));
+    return;
+  }
   const data = state.campaigns;
   if (!data.length) return root.append(emptyState());
   const best = data.filter((c) => c.emails >= 3).sort((a, b) => b.open_rate - a.open_rate)[0];
@@ -369,7 +451,7 @@ function viewConnect(root) {
   root.append(
     h("section", { class: "headline" },
       h("h1", {}, "Connect", h("br"), h("span", { class: "rate" }, "your tools")),
-      h("p", {}, "One setup link connects the Chrome extension, an AI agent or a script to this server. It contains your private token: treat it like a password."),
+      h("p", {}, `One setup link connects the Chrome extension, an AI agent or a script to ${isCloud() ? "your account" : "this server"}. It contains your private token: treat it like a password.`),
     ),
     h("section", {},
       sectionHead("Your setup link"),
@@ -380,17 +462,102 @@ function viewConnect(root) {
         msg),
     ),
     h("ol", { class: "connect-steps" },
-      step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension, open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
+      isCloud()
+        ? step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension and click Sign in with Google in its settings. Then write an email in Gmail: the red eye next to Send means it is tracked."))
+        : step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension, open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
       step("2", "AI agents and scripts", h("p", {}, "Run ", h("code", {}, "likelyread setup 'LINK'"), " once on the machine, with the link above. The agent skill in the repository explains the rest.")),
       step("3", "Another browser", h("p", {}, "Open the setup link there to sign in to this dashboard.")),
     ),
   );
 }
 
+async function viewAccount(root) {
+  state.me = null;
+  const me = await loadMe();
+  const params = new URLSearchParams(location.hash.split("?")[1] || "");
+  const msg = h("p", { class: "muted small", role: "status" });
+  const go = async (path, body) => {
+    msg.textContent = "Opening…";
+    try {
+      const { data } = await api(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+      location.href = data.url;
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  };
+  const isPro = me.plan === "pro";
+  const planName = me.billing_plan === "lifetime" ? "Pro, lifetime" : isPro ? "Pro" : "Free";
+  const until = me.plan_until ? new Date(me.plan_until * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "";
+  const usage = me.usage || {};
+  const fact = (label, value) => h("div", { class: "fact" }, h("dt", {}, label), h("dd", {}, value));
+  const p = me.prices || {};
+  const plan = (key, name, price, per, note, best) =>
+    h("div", { class: `plan${best ? " best" : ""}` },
+      h("h3", {}, name), h("p", { class: "plan-price" }, price, h("small", {}, per)), h("p", { class: "muted small" }, note),
+      h("button", { class: `btn${best ? " primary" : ""}`, type: "button", onclick: () => go("/api/billing/checkout", { plan: key }) }, `Choose ${name.toLowerCase()}`));
+
+  const admin = me.admin ? await adminPanel() : null;
+  root.append(...[
+    h("section", { class: "headline" },
+      h("h1", {}, planName, h("br"), h("span", { class: "rate" }, "plan")),
+      h("p", {}, params.get("checkout") === "success"
+        ? "Thank you. Your payment is confirmed in a few seconds; refresh if Pro does not show yet."
+        : `Signed in as ${me.email}.`),
+    ),
+    h("dl", { class: "facts" },
+      fact("Account", me.email),
+      fact("Plan", planName),
+      fact(isPro && me.billing_plan !== "lifetime" ? (me.cancel_at_period_end ? "Ends on" : "Renews on") : "History", isPro && until ? until : me.features.history_days ? `${me.features.history_days} days` : "Unlimited"),
+      fact("Tracked today", `${usage.today || 0} of ${usage.daily_limit || "unlimited"}`),
+    ),
+    !isPro && me.billing
+      ? h("section", {},
+          sectionHead("Upgrade to Pro", h("span", { class: "muted" }, "Campaign analytics, charts, filters and full history")),
+          h("div", { class: "plans" },
+            plan("pro_yearly", "Yearly", p.pro_yearly || "$36", " / year", "Three months free compared with monthly.", true),
+            plan("pro_monthly", "Monthly", p.pro_monthly || "$5", " / month", "Cancel any time."),
+            me.lifetime_left > 0 ? plan("lifetime", "Lifetime", p.lifetime || "$59", " once", `Pay once, keep Pro. ${me.lifetime_left} left at this price.`) : null),
+          msg)
+      : null,
+    isPro && me.billing && me.billing_plan !== "lifetime"
+      ? h("section", {}, sectionHead("Billing"),
+          h("div", { class: "inline-form" }, h("button", { class: "btn", type: "button", onclick: () => go("/api/billing/portal") }, "Manage subscription and invoices"), msg))
+      : null,
+    admin,
+    h("section", {},
+      sectionHead("Security"),
+      h("div", { class: "inline-form" },
+        h("button", { class: "btn", type: "button", onclick: async () => {
+          if (!confirm("Sign out on every device, including the Chrome extension and agents?")) return;
+          await api("/api/me/signout-all", { method: "POST" });
+          logout();
+        } }, "Sign out everywhere")),
+    ),
+    h("div", { class: "danger-zone" },
+      h("button", { class: "btn danger small", type: "button", onclick: async () => {
+        if (!confirm("Delete your account and every tracked email? This cannot be undone. Cancel any subscription first.")) return;
+        await api("/api/me", { method: "DELETE" });
+        logout();
+      } }, "Delete my account and data")),
+  ].filter(Boolean));
+}
+
+async function adminPanel() {
+  const { data: a } = await api("/api/admin/stats");
+  return h("section", {}, sectionHead("Admin"),
+    h("section", { class: "tiles" },
+      tile(a.accounts, "Accounts", `${a.signups_7d} new in 7 days`),
+      tile(a.paying_now, "Paying now", Object.entries(a.plans).map(([k, v]) => `${k} ${v}`).join(", ")),
+      tile(a.active_7d, "Active in 7 days", "sent a tracked email"),
+      tile(a.emails_24h, "Emails in 24 h", `${a.hits_24h} hits`)));
+}
+
 function emptyState() {
   return h("section", { class: "headline" },
     h("h1", {}, "Nothing tracked", h("br"), h("span", { class: "rate" }, "yet")),
-    h("p", {}, "Install the Likelyread Chrome extension and paste your setup link in its settings (see Connect), then send an email from Gmail with the red eye on."));
+    h("p", {}, isCloud()
+      ? "Install the Likelyread Chrome extension and click Sign in with Google in its settings, then send an email from Gmail with the red eye on."
+      : "Install the Likelyread Chrome extension and paste your setup link in its settings (see Connect), then send an email from Gmail with the red eye on."));
 }
 
 // ---------------------------------------------------------------- router
@@ -408,14 +575,21 @@ async function render() {
     await loadFilters();
     const frag = h("div", {});
     if (section === "connect") viewConnect(frag);
+    else if (section === "account" && isCloud()) await viewAccount(frag);
+    else if (section === "extension-connected") viewExtensionConnected(frag);
     else if (section === "campaigns") await viewCampaigns(frag);
     else if (section === "emails") await viewEmails(frag, params);
     else if (section === "email" && arg) await viewEmail(frag, arg);
+    else if (!can("stats")) await viewOverviewFree(frag);
     else if (!state.campaigns.length) frag.append(emptyState());
     else await viewOverview(frag);
     root.replaceChildren(frag);
   } catch (err) {
     if (err instanceof AuthError) return logout();
+    if (err instanceof ProError) {
+      state.me = null;
+      return root.replaceChildren(upsell("history", "This needs Pro", ["Emails older than 30 days", "Campaign analytics and charts", "Filters by campaign and sending address"]));
+    }
     root.replaceChildren(h("p", { class: "error" }, `Could not load data: ${err.message}`));
   }
 }
@@ -426,11 +600,14 @@ async function render() {
  * fragment changes. The token is in the fragment, so it never travels in a request;
  * it is removed from the address bar. Returns false when the link was rejected. */
 async function connectFromLink() {
-  const m = location.hash.match(/^#connect=([A-Za-z0-9._~-]{16,})$/);
+  const m = location.hash.match(/^#connect=([A-Za-z0-9._~-]{16,})(?:&ext=([a-p]{32}))?$/);
   if (!m) return true;
-  history.replaceState(null, "", "/#/connect");
+  const ext = m[2];
+  history.replaceState(null, "", ext ? "/#/extension-connected" : isCloud() ? "/#/overview" : "/#/connect");
   try {
-    await login(m[1], false);
+    // Google sign-in on the cloud: stay signed in on this device.
+    await login(m[1], isCloud());
+    if (ext) state.extensionResult = await handToExtension(ext, m[1]);
     return true;
   } catch (err) {
     state.token = null;
@@ -439,7 +616,50 @@ async function connectFromLink() {
   }
 }
 
+/** Give the token to the Chrome extension that started the sign-in. Chrome only
+ * exposes chrome.runtime here when the extension lists this site under
+ * externally_connectable, and the extension checks that the message came from it. */
+function handToExtension(id, token) {
+  return new Promise((resolve) => {
+    const rt = window.chrome && window.chrome.runtime;
+    if (!rt || !rt.sendMessage) return resolve(false);
+    const timer = setTimeout(() => resolve(false), 3000);
+    try {
+      rt.sendMessage(id, { type: "connect", serverUrl: location.origin, token }, (reply) => {
+        clearTimeout(timer);
+        void rt.lastError;
+        resolve(!!(reply && reply.ok));
+      });
+    } catch {
+      clearTimeout(timer);
+      resolve(false);
+    }
+  });
+}
+
+function viewExtensionConnected(root) {
+  const ok = state.extensionResult;
+  root.append(h("section", { class: "headline" },
+    h("h1", {}, ok ? "Extension" : "Almost", h("br"), h("span", { class: "rate" }, ok ? "connected" : "there")),
+    h("p", {}, ok
+      ? "You can close this tab. Write an email in Gmail: the red eye next to Send means it is tracked."
+      : "The extension did not answer. Copy your setup link from Connect and paste it in the extension's settings."),
+    ok ? null : h("a", { class: "btn primary", href: "#/connect" }, "Open Connect")));
+}
+
+async function loadConfig() {
+  try {
+    const res = await fetch("/api/config");
+    if (res.ok) state.config = await res.json();
+  } catch { /* self-host servers before 0.4 have no /api/config */ }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+  await loadConfig();
+  if (new URLSearchParams(location.search).get("signin") === "failed") {
+    history.replaceState(null, "", "/");
+    showLogin("Google sign-in did not complete. Try again.");
+  }
   document.getElementById("login-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const token = document.getElementById("token-input").value.trim();
@@ -454,6 +674,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
   document.getElementById("logout").addEventListener("click", logout);
+  if (isCloud()) document.getElementById("remember").checked = true;
   document.getElementById("refresh").addEventListener("click", render);
   document.getElementById("campaign-filter").addEventListener("change", (e) => {
     state.campaign = e.target.value;
@@ -476,8 +697,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   if (!(await connectFromLink())) return;
-  state.token = loadToken();
-  if (!state.token) return showLogin();
+  state.token = state.token || loadToken();
+  if (!state.token) return document.getElementById("login").hidden ? showLogin() : undefined;
   document.getElementById("shell").hidden = false;
   await render();
 });

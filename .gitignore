@@ -16,3 +16,4 @@ extension/node_modules/
 extension/dist/
 extension/.test-dist/
 extension/*.zip
+extension/dist-cloud-e2e/

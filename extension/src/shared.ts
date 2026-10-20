@@ -43,6 +43,13 @@ export type Message =
   | { type: "getConfig" }
   | { type: "configChanged" };
 
+/** Sent by the Likelyread Cloud sign-in page (externally_connectable). */
+export interface ExternalConnect {
+  type: "connect";
+  serverUrl: string;
+  token: string;
+}
+
 export const DEFAULT_SETTINGS: Settings = { serverUrl: "", token: "", trackByDefault: true, campaign: "" };
 
 export async function getSettings(): Promise<Settings> {

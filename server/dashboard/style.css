@@ -171,3 +171,24 @@ tr.dimrow td { color: var(--muted); }
 .connect-n { font-size: 28px; line-height: 1; font-weight: 600; color: var(--accent); }
 .connect-step h3 { font-size: 18px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.02em; }
 @media (max-width: 900px) { .connect-steps { grid-template-columns: 1fr; } }
+
+/* cloud: plans and upsells */
+.upsell { background: var(--ink); color: #fff; padding: 28px; display: grid; gap: 14px; align-content: start; }
+.upsell .eyebrow { color: var(--accent); font-size: 13px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; margin: 0; }
+.upsell h2 { font-size: 30px; line-height: 1.05; letter-spacing: -0.03em; font-weight: 600; margin: 0; }
+.upsell ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.upsell .muted { color: #bdbdbd; }
+.upsell .btn { justify-self: start; }
+.plans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.plan { background: var(--surface); padding: 22px; display: grid; gap: 8px; align-content: start; }
+.plan.best { outline: 2px solid var(--accent); outline-offset: -2px; }
+.plan h3 { margin: 0; font-size: 18px; font-weight: 600; }
+.plan-price { margin: 0; font-size: 40px; font-weight: 600; letter-spacing: -0.04em; line-height: 1; }
+.plan-price small { font-size: 15px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+.plan .btn { justify-self: start; margin-top: 6px; }
+.btn.google { width: 100%; margin: 6px 0; text-decoration: none; }
+@media (max-width: 900px) { .plans { grid-template-columns: 1fr; } }
+#login-cloud, #login-token { display: grid; gap: 12px; }
+a.btn { text-decoration: none; }
+.plan .btn:not(.primary) { background: #fff; }
+.plan .btn:not(.primary):hover { background: var(--surface-2); }

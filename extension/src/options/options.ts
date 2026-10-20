@@ -1,3 +1,4 @@
+import { CLOUD_URL, cloudSignInUrl } from "../cloud";
 import { normalizeServerUrl, parseSetupLink } from "../lib";
 import { ApiError, apiFetch, getSettings, saveSettings, type Settings } from "../shared";
 
@@ -42,8 +43,47 @@ async function test(s: Settings): Promise<boolean> {
   }
 }
 
+async function showCurrent(): Promise<void> {
+  const s = await getSettings();
+  const el = $("current");
+  if (!s.serverUrl || !s.token) {
+    el.textContent = "Not connected yet.";
+    el.className = "hint";
+    return;
+  }
+  if (s.serverUrl !== CLOUD_URL) {
+    el.textContent = `Connected to your server, ${new URL(s.serverUrl).host}.`;
+    el.className = "hint ok";
+    return;
+  }
+  try {
+    const me = await apiFetch<{ email: string; plan: string }>(s, "/api/me");
+    el.textContent = `Signed in as ${me.email}, ${me.plan === "pro" ? "Pro" : "Free"} plan.`;
+    el.className = "hint ok";
+    $<HTMLButtonElement>("cloudSignIn").textContent = "Switch Google account";
+  } catch (err) {
+    el.textContent = err instanceof ApiError && err.status === 401 ? "Signed out. Sign in again." : "Connected to Likelyread Cloud.";
+    el.className = err instanceof ApiError && err.status === 401 ? "hint error" : "hint ok";
+  }
+}
+
 async function main(): Promise<void> {
   const s = await getSettings();
+  $("cloudSignIn").addEventListener("click", () => {
+    void chrome.tabs.create({ url: cloudSignInUrl(chrome.runtime.id) });
+  });
+  // The sign-in tab hands the token to the background worker; reflect it here.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && (changes.token || changes.serverUrl)) {
+      void getSettings().then((n) => {
+        $<HTMLInputElement>("serverUrl").value = n.serverUrl;
+        $<HTMLInputElement>("token").value = n.token;
+      });
+      void showCurrent();
+    }
+  });
+  void showCurrent();
+  if (s.serverUrl && s.serverUrl !== CLOUD_URL) ($("selfhost") as HTMLDetailsElement).open = true;
   $<HTMLInputElement>("serverUrl").value = s.serverUrl;
   $<HTMLInputElement>("token").value = s.token;
   $<HTMLInputElement>("trackByDefault").checked = s.trackByDefault;

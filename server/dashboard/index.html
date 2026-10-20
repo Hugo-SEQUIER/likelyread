@@ -16,11 +16,18 @@
     <form id="login-form" class="login-card">
       <p class="wordmark">likelyread</p>
       <h1 class="login-title">Your read receipts</h1>
-      <p class="muted">Open the setup link the installer printed, or paste your token (<code>LIKELYREAD_TOKEN</code> in <code>deploy/.env</code>).</p>
-      <label for="token-input">Token</label>
-      <input id="token-input" type="password" autocomplete="current-password" required>
-      <label class="check"><input id="remember" type="checkbox"> Remember on this device</label>
-      <button type="submit" class="btn primary">Open dashboard</button>
+      <div id="login-cloud" hidden>
+        <p class="muted">See when the emails you send from Gmail are opened. Free to start.</p>
+        <a class="btn primary google" href="/auth/google">Continue with Google</a>
+        <p class="muted small">We only read your email address to create the account. Never your inbox.</p>
+      </div>
+      <div id="login-token">
+        <p class="muted">Open the setup link the installer printed, or paste your token (<code>LIKELYREAD_TOKEN</code> in <code>deploy/.env</code>).</p>
+        <label for="token-input">Token</label>
+        <input id="token-input" type="password" autocomplete="current-password" required>
+        <label class="check"><input id="remember" type="checkbox"> Remember on this device</label>
+        <button type="submit" class="btn primary">Open dashboard</button>
+      </div>
       <p id="login-error" class="error" role="alert"></p>
     </form>
   </div>
@@ -33,6 +40,7 @@
         <a href="#/campaigns" data-tab="campaigns">Campaigns</a>
         <a href="#/emails" data-tab="emails">Emails</a>
         <a href="#/connect" data-tab="connect">Connect</a>
+        <a href="#/account" data-tab="account" hidden>Account</a>
       </nav>
       <div class="topbar-right">
         <label class="sr-only" for="campaign-filter">Campaign</label>

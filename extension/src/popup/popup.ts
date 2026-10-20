@@ -31,7 +31,7 @@ async function main(): Promise<void> {
     const link = h("a", null, "Open the options");
     link.href = "#";
     link.addEventListener("click", () => chrome.runtime.openOptionsPage());
-    list.replaceChildren(h("p", "note", "Likelyread is not set up yet. ", link, " and paste your setup link."));
+    list.replaceChildren(h("p", "note", "Likelyread is not set up yet. ", link, " to sign in with Google or connect your server."));
     return;
   }
   dash.href = `${settings.serverUrl}/`;
@@ -39,7 +39,10 @@ async function main(): Promise<void> {
   try {
     const [emails, campaigns] = await Promise.all([
       apiFetch<EmailSummary[]>(settings, "/api/emails?limit=50"),
-      apiFetch<{ name: string | null }[]>(settings, "/api/campaigns").catch(() => []),
+      apiFetch<string[]>(settings, "/api/campaign-names")
+        .then((names) => names.map((name) => ({ name })))
+        .catch(() => apiFetch<{ name: string | null }[]>(settings, "/api/campaigns"))
+        .catch(() => [] as { name: string | null }[]),
     ]);
     document.getElementById("campaign-list")!.replaceChildren(
       ...campaigns.filter((c) => c.name).map((c) => {

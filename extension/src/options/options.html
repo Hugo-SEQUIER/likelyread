@@ -10,7 +10,14 @@
 <body>
   <main>
     <p class="wordmark">likelyread</p>
-    <h1>Connect your server</h1>
+    <h1>Connect Likelyread</h1>
+    <section class="cloud">
+      <p class="lead">Use the free hosted service: sign in with Google and you are ready. No server needed.</p>
+      <button type="button" class="primary" id="cloudSignIn">Sign in with Google</button>
+      <p id="current" class="hint" role="status"></p>
+    </section>
+    <details id="selfhost">
+      <summary>Use my own server instead</summary>
     <p class="lead">Paste the setup link the installer printed. You also find it on your dashboard, under Connect.</p>
     <form id="form">
       <label for="setupLink">Setup link</label>
@@ -29,6 +36,7 @@
       </div>
       <p id="status" role="status"></p>
     </form>
+    </details>
   </main>
 </body>
 </html>

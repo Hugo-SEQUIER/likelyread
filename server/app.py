@@ -1,6 +1,9 @@
-"""likelyread server: self-hosted email open tracking for a single Gmail user.
+"""Likelyread server: email open tracking for Gmail.
 
-One process, one SQLite file, one bearer token. See SPEC.md for the contract.
+Two modes, one codebase:
+- selfhost (default): one user, one bearer token, every feature. See SPEC.md.
+- cloud (MODE=cloud): many accounts with Google sign-in, Free and Pro plans and
+  Polar billing. The cloud parts live in cloud.py.
 """
 
 from __future__ import annotations
@@ -17,9 +20,9 @@ import threading
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,6 +48,9 @@ def _env_float(name: str, default: float) -> float:
 
 class Settings:
     def __init__(self) -> None:
+        self.mode = (os.environ.get("MODE") or "selfhost").strip().lower()
+        if self.mode not in ("selfhost", "cloud"):
+            raise RuntimeError("MODE must be selfhost or cloud.")
         self.token = os.environ.get("LIKELYREAD_TOKEN", "")
         self.db_path = os.environ.get("DB_PATH", "/data/likelyread.db")
         self.grace_seconds = _env_float("GRACE_SECONDS", 20)
@@ -56,10 +62,11 @@ class Settings:
         ]
         self.dashboard = _env_bool("DASHBOARD", True)
         self.pixel_rate_per_min = int(_env_float("PIXEL_RATE_PER_MIN", 60))
-        if not self.token:
-            raise RuntimeError("LIKELYREAD_TOKEN is required. Generate one with: openssl rand -hex 32")
-        if len(self.token) < 16:
-            raise RuntimeError("LIKELYREAD_TOKEN is too short (minimum 16 characters).")
+        if self.mode == "selfhost":
+            if not self.token:
+                raise RuntimeError("LIKELYREAD_TOKEN is required. Generate one with: openssl rand -hex 32")
+            if len(self.token) < 16:
+                raise RuntimeError("LIKELYREAD_TOKEN is too short (minimum 16 characters).")
 
 
 # 43-byte transparent 1x1 GIF.
@@ -100,7 +107,8 @@ CREATE TABLE IF NOT EXISTS emails (
   recipients  TEXT,
   sent_at     REAL,
   campaign    TEXT,
-  sender      TEXT
+  sender      TEXT,
+  account_id  TEXT
 );
 CREATE TABLE IF NOT EXISTS hits (
   id        INTEGER PRIMARY KEY,
@@ -110,8 +118,9 @@ CREATE TABLE IF NOT EXISTS hits (
   ua        TEXT
 );
 CREATE TABLE IF NOT EXISTS suppressions (
-  email_id  TEXT,
-  ts        REAL
+  email_id    TEXT,
+  ts          REAL,
+  account_id  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_hits_email ON hits(email_id);
 CREATE INDEX IF NOT EXISTS idx_hits_ts ON hits(ts);
@@ -120,19 +129,56 @@ CREATE INDEX IF NOT EXISTS idx_emails_sent ON emails(sent_at);
 """
 
 # --------------------------------------------------------------------------
+# Plans. Self-hosting has everything; the cloud has Free and Pro.
+# --------------------------------------------------------------------------
+
+FEATURES: dict[str, dict] = {
+    "selfhost": {"campaigns": True, "stats": True, "senders": True, "history_days": None, "daily_limit": None},
+    "pro": {"campaigns": True, "stats": True, "senders": True, "history_days": None, "daily_limit": 5000},
+    "free": {"campaigns": False, "stats": False, "senders": False, "history_days": 30, "daily_limit": 500},
+}
+
+
+@dataclass(frozen=True)
+class Principal:
+    """Who is calling. account_id is None in self-host mode."""
+
+    account_id: str | None
+    plan: str  # selfhost | free | pro
+    email: str | None = None
+
+    @property
+    def features(self) -> dict:
+        return FEATURES[self.plan]
+
+    def since(self, now: float | None = None) -> float | None:
+        days = self.features["history_days"]
+        return None if days is None else (time.time() if now is None else now) - days * 86400
+
+
+def pro_required(feature: str) -> HTTPException:
+    return HTTPException(status_code=402, detail={"error": "pro_required", "feature": feature})
+
+
+def need(p: Principal, feature: str) -> None:
+    if not p.features.get(feature):
+        raise pro_required(feature)
+
+
+# --------------------------------------------------------------------------
 # Database
 # --------------------------------------------------------------------------
 
 
 class DB:
-    """A single SQLite connection guarded by a lock. Plenty for one user."""
+    """A single SQLite connection guarded by a lock."""
 
     def __init__(self, path: str) -> None:
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         with self.lock:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
@@ -142,7 +188,13 @@ class DB:
                 self.conn.execute("ALTER TABLE emails ADD COLUMN campaign TEXT")
             if "sender" not in cols:  # databases created before the sender address was stored
                 self.conn.execute("ALTER TABLE emails ADD COLUMN sender TEXT")
+            if "account_id" not in cols:  # databases created before accounts existed
+                self.conn.execute("ALTER TABLE emails ADD COLUMN account_id TEXT")
+            scols = {r["name"] for r in self.conn.execute("PRAGMA table_info(suppressions)")}
+            if "account_id" not in scols:
+                self.conn.execute("ALTER TABLE suppressions ADD COLUMN account_id TEXT")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_campaign ON emails(campaign)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_account ON emails(account_id, sent_at)")
 
     def execute(self, sql: str, params: tuple | list = ()) -> sqlite3.Cursor:
         with self.lock:
@@ -193,6 +245,8 @@ def _is_google_ip(ip: str | None) -> bool:
         addr = ipaddress.ip_address(ip)
     except ValueError:
         return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
     return any(addr in net for net in GOOGLE_PROXY_NETS)
 
 
@@ -212,7 +266,8 @@ def status_of(summary: dict) -> str:
 
 
 class Store:
-    """Read/write helpers on top of DB, including classification."""
+    """Read/write helpers on top of DB, including classification. Every query is
+    scoped to one account (account_id IS NULL in self-host mode)."""
 
     def __init__(self, db: DB, cfg: Settings) -> None:
         self.db = db
@@ -220,9 +275,17 @@ class Store:
 
     # ---- loading -------------------------------------------------------
 
-    def _emails(self, campaign: str | None = None, q: str | None = None, sender: str | None = None) -> list[sqlite3.Row]:
+    def _emails(
+        self,
+        acct: str | None,
+        campaign: str | None = None,
+        q: str | None = None,
+        sender: str | None = None,
+        since: float | None = None,
+    ) -> list[sqlite3.Row]:
         sql = "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails"
-        where, params = [], []
+        where: list[str] = ["account_id IS ?"]
+        params: list[object] = [acct]
         if campaign == NO_CAMPAIGN:
             where.append("(campaign IS NULL OR campaign = '')")
         elif campaign:
@@ -235,12 +298,15 @@ class Store:
             where.append("(subject LIKE ? OR recipients LIKE ? OR campaign LIKE ? OR sender LIKE ?)")
             like = f"%{q}%"
             params += [like, like, like, like]
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY sent_at DESC"
+        if since is not None:
+            where.append("sent_at >= ?")
+            params.append(since)
+        sql += " WHERE " + " AND ".join(where) + " ORDER BY sent_at DESC"
         return self.db.query(sql, params)
 
-    def _hits_and_supps(self, ids: list[str]) -> tuple[dict[str, list[sqlite3.Row]], dict[str, list[float]]]:
+    def _hits_and_supps(
+        self, ids: list[str], acct: str | None
+    ) -> tuple[dict[str, list[sqlite3.Row]], dict[str, list[float]]]:
         hits: dict[str, list[sqlite3.Row]] = defaultdict(list)
         supps: dict[str, list[float]] = defaultdict(list)
         if not ids:
@@ -253,7 +319,12 @@ class Store:
                 f"SELECT email_id, ts, ip, ua FROM hits WHERE email_id IN ({marks}) ORDER BY ts", chunk
             ):
                 hits[r["email_id"]].append(r)
-            for r in self.db.query(f"SELECT email_id, ts FROM suppressions WHERE email_id IN ({marks})", chunk):
+            # Only the owner's own suppress pings count, so another account cannot
+            # hide someone's opens by pinging a pixel id it has seen.
+            for r in self.db.query(
+                f"SELECT email_id, ts FROM suppressions WHERE email_id IN ({marks}) AND account_id IS ?",
+                [*chunk, acct],
+            ):
                 supps[r["email_id"]].append(r["ts"])
         return hits, supps
 
@@ -285,22 +356,32 @@ class Store:
         return summary
 
     def summaries(
-        self, campaign: str | None = None, q: str | None = None, sender: str | None = None
+        self,
+        acct: str | None,
+        campaign: str | None = None,
+        q: str | None = None,
+        sender: str | None = None,
+        since: float | None = None,
     ) -> list[tuple[dict, list[dict]]]:
-        emails = self._emails(campaign, q, sender)
-        hits, supps = self._hits_and_supps([e["id"] for e in emails])
+        emails = self._emails(acct, campaign, q, sender, since)
+        hits, supps = self._hits_and_supps([e["id"] for e in emails], acct)
         result = []
         for e in emails:
             classified = self._classified(e, hits.get(e["id"], []), supps.get(e["id"], []))
             result.append((self._summary(e, classified), classified))
         return result
 
-    def one(self, email_id: str) -> dict | None:
-        rows = self.db.query("SELECT id, subject, recipients, sent_at, campaign, sender FROM emails WHERE id = ?", (email_id,))
+    def one(self, acct: str | None, email_id: str, since: float | None = None) -> dict | None:
+        rows = self.db.query(
+            "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails WHERE id = ? AND account_id IS ?",
+            (email_id, acct),
+        )
         if not rows:
             return None
         e = rows[0]
-        hits, supps = self._hits_and_supps([email_id])
+        if since is not None and (e["sent_at"] or 0) < since:
+            raise pro_required("history")
+        hits, supps = self._hits_and_supps([email_id], acct)
         classified = self._classified(e, hits.get(email_id, []), supps.get(email_id, []))
         summary = self._summary(e, classified)
         summary["hits"] = classified
@@ -407,6 +488,13 @@ class RateLimiter:
             return True
 
 
+def limiter_key(ip: str | None, email_id: str) -> str:
+    """Gmail's proxy serves many recipients from few addresses: limit it per email,
+    so one busy proxy address never hides other people's opens."""
+    ip = ip or "?"
+    return f"{ip}|{email_id}" if _is_google_ip(ip) else ip
+
+
 # --------------------------------------------------------------------------
 # App factory
 # --------------------------------------------------------------------------
@@ -445,6 +533,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     db = DB(cfg.db_path)
     store = Store(db, cfg)
     limiter = RateLimiter(cfg.pixel_rate_per_min)
+    cloud = None
+    if cfg.mode == "cloud":
+        import cloud as cloud_mod  # only loaded in cloud mode
+
+        cloud = cloud_mod.Cloud(db, cloud_mod.CloudSettings())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -464,6 +557,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.cfg = cfg
     app.state.limiter = limiter
+    app.state.cloud = cloud
 
     if cfg.allowed_origins:
         app.add_middleware(
@@ -481,19 +575,31 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if not request.url.path.startswith("/p/"):
             response.headers.setdefault("X-Frame-Options", "DENY")
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith("/api/") or request.url.path.startswith("/auth/"):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     token_bytes = cfg.token.encode()
 
-    def require_token(request: Request) -> None:
-        header = request.headers.get("authorization", "")
-        scheme, _, supplied = header.partition(" ")
-        if scheme.lower() != "bearer" or not hmac.compare_digest(supplied.strip().encode(), token_bytes):
-            raise HTTPException(status_code=401, detail="invalid token", headers={"WWW-Authenticate": "Bearer"})
+    def bearer(request: Request) -> str:
+        scheme, _, supplied = request.headers.get("authorization", "").partition(" ")
+        return supplied.strip() if scheme.lower() == "bearer" else ""
 
-    auth = [Depends(require_token)]
+    def unauthorized() -> HTTPException:
+        return HTTPException(status_code=401, detail="invalid token", headers={"WWW-Authenticate": "Bearer"})
+
+    def principal(request: Request) -> Principal:
+        supplied = bearer(request)
+        if cloud is None:
+            if not supplied or not hmac.compare_digest(supplied.encode(), token_bytes):
+                raise unauthorized()
+            return Principal(account_id=None, plan="selfhost")
+        found = cloud.authenticate(supplied) if supplied else None
+        if found is None:
+            raise unauthorized()
+        return found
+
+    auth = [Depends(principal)]
 
     # ---- public ------------------------------------------------------
 
@@ -501,11 +607,19 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     def healthz():
         return {"ok": True}
 
+    @app.get("/api/config")
+    def config():
+        """Public: lets the dashboard and extension adapt to the server's mode."""
+        out = {"mode": cfg.mode}
+        if cloud is not None:
+            out.update(cloud.public_config())
+        return out
+
     @app.get("/p/{name}")
     def pixel(name: str, request: Request):
         email_id = name[:-4].lower() if name.endswith(".gif") else ""
         ip = request.client.host if request.client else None
-        if UUID4_RE.match(email_id) and limiter.allow(ip or "?"):
+        if UUID4_RE.match(email_id) and limiter.allow(limiter_key(ip, email_id)):
             ua = (request.headers.get("user-agent") or "")[:UA_MAX]
             try:
                 db.execute(
@@ -518,35 +632,60 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
     # ---- authenticated API ---------------------------------------------
 
-    @app.get("/api/ping", dependencies=auth)
-    def ping():
-        return {"ok": True, "time": time.time()}
+    @app.get("/api/ping")
+    def ping(p: Principal = Depends(principal)):
+        return {"ok": True, "time": time.time(), "plan": p.plan}
 
-    @app.post("/api/emails", dependencies=auth)
-    def register(body: EmailIn):
-        sent_at = time.time() - body.age
-        # Upsert: a retried registration carries the same data; a re-send after a
-        # failed or undone send updates the record to the real send.
-        db.execute(
-            """INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender) VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET subject=excluded.subject, recipients=excluded.recipients,
-               sent_at=excluded.sent_at, campaign=COALESCE(excluded.campaign, emails.campaign),
-               sender=COALESCE(excluded.sender, emails.sender)""",
-            (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign, body.sender),
-        )
+    @app.get("/api/me")
+    def me(p: Principal = Depends(principal)):
+        if cloud is not None:
+            return cloud.me(p)
+        return {"mode": "selfhost", "plan": "selfhost", "email": None, "features": p.features}
+
+    @app.post("/api/emails")
+    def register(body: EmailIn, p: Principal = Depends(principal)):
+        now = time.time()
+        sent_at = now - body.age
+        acct = p.account_id
+        with db.lock:
+            existing = db.conn.execute("SELECT account_id FROM emails WHERE id = ?", (body.id,)).fetchone()
+            if existing is not None and existing["account_id"] != acct:
+                # Pixel ids are random; one belonging to another account is never reused.
+                raise HTTPException(status_code=409, detail="id belongs to another account")
+            limit = p.features["daily_limit"]
+            if existing is None and limit is not None:
+                n = db.conn.execute(
+                    "SELECT COUNT(*) FROM emails WHERE account_id IS ? AND sent_at >= ?", (acct, now - 86400)
+                ).fetchone()[0]
+                if n >= limit:
+                    raise HTTPException(status_code=429, detail={"error": "daily_limit", "limit": limit})
+            # Upsert: a retried registration carries the same data; a re-send after a
+            # failed or undone send updates the record to the real send.
+            db.conn.execute(
+                """INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender, account_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET subject=excluded.subject, recipients=excluded.recipients,
+                   sent_at=excluded.sent_at, campaign=COALESCE(excluded.campaign, emails.campaign),
+                   sender=COALESCE(excluded.sender, emails.sender)
+                   WHERE emails.account_id IS excluded.account_id""",
+                (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign, body.sender, acct),
+            )
         return {"ok": True, "id": body.id, "sent_at": sent_at}
 
-    @app.post("/api/emails/{email_id}/suppress", dependencies=auth)
-    def suppress(email_id: str):
+    @app.post("/api/emails/{email_id}/suppress")
+    def suppress(email_id: str, p: Principal = Depends(principal)):
         email_id = email_id.lower()
         if not UUID4_RE.match(email_id):
             raise HTTPException(status_code=422, detail="id must be a UUIDv4")
-        db.execute("INSERT INTO suppressions(email_id, ts) VALUES (?, ?)", (email_id, time.time()))
+        db.execute(
+            "INSERT INTO suppressions(email_id, ts, account_id) VALUES (?, ?, ?)", (email_id, time.time(), p.account_id)
+        )
         return {"ok": True}
 
-    @app.get("/api/emails", dependencies=auth)
+    @app.get("/api/emails")
     def list_emails(
         response: Response,
+        p: Principal = Depends(principal),
         limit: int = Query(50, ge=1, le=1000),
         offset: int = Query(0, ge=0),
         campaign: str | None = Query(None, max_length=200),
@@ -554,43 +693,50 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         status: str | None = Query(None, pattern="^(opened|not_opened|prefetch_only)$"),
         sender: str | None = Query(None, max_length=320),
     ):
-        items = [s for s, _ in store.summaries(campaign, q, sender)]
+        if campaign:
+            need(p, "campaigns")
+        if sender:
+            need(p, "senders")
+        items = [s for s, _ in store.summaries(p.account_id, campaign, q, sender, p.since())]
         if status:
             items = [s for s in items if s["status"] == status]
         response.headers["X-Total-Count"] = str(len(items))
         return items[offset : offset + limit]
 
-    @app.get("/api/emails/{email_id}", dependencies=auth)
-    def get_email(email_id: str):
-        found = store.one(email_id.lower())
+    @app.get("/api/emails/{email_id}")
+    def get_email(email_id: str, p: Principal = Depends(principal)):
+        found = store.one(p.account_id, email_id.lower(), p.since())
         if not found:
             raise HTTPException(status_code=404, detail="not found")
         return found
 
-    @app.patch("/api/emails/{email_id}", dependencies=auth)
-    def patch_email(email_id: str, body: EmailPatch):
+    @app.patch("/api/emails/{email_id}")
+    def patch_email(email_id: str, body: EmailPatch, p: Principal = Depends(principal)):
         email_id = email_id.lower()
-        cur = db.execute("UPDATE emails SET campaign = ? WHERE id = ?", (body.campaign, email_id))
+        cur = db.execute(
+            "UPDATE emails SET campaign = ? WHERE id = ? AND account_id IS ?", (body.campaign, email_id, p.account_id)
+        )
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="not found")
-        return store.one(email_id)
+        return store.one(p.account_id, email_id)
 
-    @app.delete("/api/emails/{email_id}", dependencies=auth)
-    def delete_email(email_id: str):
+    @app.delete("/api/emails/{email_id}")
+    def delete_email(email_id: str, p: Principal = Depends(principal)):
         email_id = email_id.lower()
-        cur = db.execute("DELETE FROM emails WHERE id = ?", (email_id,))
+        cur = db.execute("DELETE FROM emails WHERE id = ? AND account_id IS ?", (email_id, p.account_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="not found")
         db.execute("DELETE FROM hits WHERE email_id = ?", (email_id,))
         db.execute("DELETE FROM suppressions WHERE email_id = ?", (email_id,))
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="not found")
         return {"ok": True}
 
-    # ---- campaigns and dashboard stats ----------------------------------
+    # ---- campaigns and dashboard stats (Pro in the cloud) ----------------
 
-    @app.get("/api/campaigns", dependencies=auth)
-    def campaigns():
+    @app.get("/api/campaigns")
+    def campaigns(p: Principal = Depends(principal)):
+        need(p, "campaigns")
         groups: dict[str | None, list[dict]] = defaultdict(list)
-        for s, _ in store.summaries():
+        for s, _ in store.summaries(p.account_id):
             groups[s["campaign"]].append(s)
         out = []
         for name, items in groups.items():
@@ -615,30 +761,50 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         out.sort(key=lambda c: c["last_sent"] or 0, reverse=True)
         return out
 
-    @app.get("/api/senders", dependencies=auth)
-    def senders():
+    @app.get("/api/campaign-names")
+    def campaign_names(p: Principal = Depends(principal)):
+        """Names only, for the compose picker. Every plan can tag emails."""
+        rows = db.query(
+            "SELECT campaign, MAX(sent_at) AS last FROM emails WHERE account_id IS ? AND campaign IS NOT NULL "
+            "AND campaign != '' GROUP BY campaign ORDER BY last DESC LIMIT 50",
+            (p.account_id,),
+        )
+        return [r["campaign"] for r in rows]
+
+    @app.get("/api/senders")
+    def senders(p: Principal = Depends(principal)):
+        need(p, "senders")
         rows = db.query(
             "SELECT lower(sender) AS s, COUNT(*) AS n, MAX(sent_at) AS last FROM emails "
-            "WHERE sender IS NOT NULL AND sender != '' GROUP BY lower(sender) ORDER BY last DESC"
+            "WHERE account_id IS ? AND sender IS NOT NULL AND sender != '' GROUP BY lower(sender) ORDER BY last DESC",
+            (p.account_id,),
         )
         return [{"sender": r["s"], "emails": r["n"], "last_sent": r["last"]} for r in rows]
 
-    @app.patch("/api/campaigns/{name}", dependencies=auth)
-    def rename_campaign(name: str, body: CampaignRename):
+    @app.patch("/api/campaigns/{name}")
+    def rename_campaign(name: str, body: CampaignRename, p: Principal = Depends(principal)):
+        need(p, "campaigns")
         if name == NO_CAMPAIGN:
-            cur = db.execute("UPDATE emails SET campaign = ? WHERE campaign IS NULL OR campaign = ''", (body.name,))
+            cur = db.execute(
+                "UPDATE emails SET campaign = ? WHERE account_id IS ? AND (campaign IS NULL OR campaign = '')",
+                (body.name, p.account_id),
+            )
         else:
-            cur = db.execute("UPDATE emails SET campaign = ? WHERE campaign = ?", (body.name, name))
+            cur = db.execute(
+                "UPDATE emails SET campaign = ? WHERE account_id IS ? AND campaign = ?", (body.name, p.account_id, name)
+            )
         return {"ok": True, "updated": cur.rowcount}
 
-    @app.get("/api/stats", dependencies=auth)
+    @app.get("/api/stats")
     def stats(
+        p: Principal = Depends(principal),
         campaign: str | None = Query(None, max_length=200),
         sender: str | None = Query(None, max_length=320),
         days: int = Query(30, ge=1, le=365),
         tz: int = Query(0, ge=-14 * 60, le=14 * 60, description="minutes east of UTC"),
     ):
-        pairs = store.summaries(campaign, sender=sender)
+        need(p, "stats")
+        pairs = store.summaries(p.account_id, campaign, sender=sender)
         items = [s for s, _ in pairs]
         now = time.time()
         today = datetime.fromtimestamp(now + tz * 60, tz=timezone.utc).date()
@@ -687,6 +853,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             "recent_opens": recent[:20],
         }
 
+    if cloud is not None:
+        cloud.register_routes(app, principal)
+
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PATCH", "DELETE"], dependencies=auth)
     def api_not_found(rest: str):
         raise HTTPException(status_code=404, detail="not found")
@@ -696,7 +865,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     if cfg.dashboard and DASHBOARD_DIR.is_dir():
         dashboard_csp = (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
         )
         files = {p.name: p for p in DASHBOARD_DIR.iterdir() if p.is_file()}
 
@@ -723,4 +892,4 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
 
 # Run with: uvicorn app:create_app --factory
-# create_app() raises when LIKELYREAD_TOKEN is missing, so the server refuses to start.
+# create_app() raises when LIKELYREAD_TOKEN is missing in self-host mode, so the server refuses to start.

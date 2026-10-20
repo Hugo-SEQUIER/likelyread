@@ -1,6 +1,7 @@
 /** Background service worker: registration queue, suppress pings, DNR rules. */
 import { backoffMs, dnrRules, MAX_RETRY_MS, normalizeServerUrl, UUID4_RE } from "./lib";
-import { ApiError, apiFetch, getSettings, saveSettings, type ContentConfig, type Message, type QueueItem } from "./shared";
+import { CLOUD_URL } from "./cloud";
+import { ApiError, apiFetch, getSettings, saveSettings, type ContentConfig, type ExternalConnect, type Message, type QueueItem } from "./shared";
 
 const QUEUE_KEY = "queue";
 // Per account, so a send-as address used in one Gmail account never makes another
@@ -110,12 +111,23 @@ async function campaignNames(): Promise<string[]> {
   const c = cache as { at: number; names: string[] } | undefined;
   if (c && Date.now() - c.at < CAMPAIGN_CACHE_MS) return c.names;
   try {
-    const rows = await apiFetch<{ name: string | null }[]>(settings, "/api/campaigns");
-    const names = rows.map((r) => r.name).filter((n): n is string => !!n).slice(0, 30);
+    const names = (await fetchCampaignNames(settings)).slice(0, 30);
     await chrome.storage.local.set({ [CAMPAIGN_CACHE_KEY]: { at: Date.now(), names } });
     return names;
   } catch {
     return c?.names ?? [];
+  }
+}
+
+/** Names for the compose picker. /api/campaign-names works on every plan; servers
+ * before 0.4 only have /api/campaigns. */
+async function fetchCampaignNames(settings: Awaited<ReturnType<typeof getSettings>>): Promise<string[]> {
+  try {
+    return await apiFetch<string[]>(settings, "/api/campaign-names");
+  } catch (err) {
+    if (!(err instanceof ApiError) || err.status !== 404) throw err;
+    const rows = await apiFetch<{ name: string | null }[]>(settings, "/api/campaigns");
+    return rows.map((r) => r.name).filter((n): n is string => !!n);
   }
 }
 
@@ -167,6 +179,18 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse) => {
     return true;
   }
   return false;
+});
+
+// Likelyread Cloud sign-in: the page the Google sign-in lands on hands over the
+// account token. Only that exact origin is accepted, and only a plausible token.
+chrome.runtime.onMessageExternal.addListener((msg: ExternalConnect, sender, sendResponse) => {
+  const origin = sender.origin || (sender.url ? new URL(sender.url).origin : "");
+  if (origin !== CLOUD_URL || msg?.type !== "connect" || msg.serverUrl !== CLOUD_URL) return false;
+  if (typeof msg.token !== "string" || !/^[A-Za-z0-9._~-]{16,200}$/.test(msg.token)) return false;
+  saveSettings({ serverUrl: CLOUD_URL, token: msg.token })
+    .then(() => sendResponse({ ok: true }))
+    .catch(() => sendResponse({ ok: false }));
+  return true;
 });
 
 chrome.alarms.onAlarm.addListener((a) => {
