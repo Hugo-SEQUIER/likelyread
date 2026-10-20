@@ -117,13 +117,13 @@ CORS: `/api/*` allows only the extension origin (`chrome-extension://<id>`, conf
 
 Each hit is classified in this order, and the first rule that matches wins:
 
-1. **`self`**: `ts` is before `sent_at − 10s` (**[added]** a draft preview: the email was not sent yet, which matters when an agent embeds the pixel in a draft and registers it after sending), or within `[sent_at − 10s, sent_at + GRACE_SECONDS]`, or within `[suppress − 5s, suppress + SUPPRESS_WINDOW_SECONDS]` of any suppression.
-2. **`prefetch`**: the hit looks like Apple Mail Privacy Protection: the UA is exactly `Mozilla/5.0`. This rule is heuristic (no IP check yet).
+1. **`self`**: `ts` is before `sent_at − 10s` (**[added]** a draft preview: the email was not sent yet, which matters when an agent embeds the pixel in a draft and registers it after sending), or within `[sent_at − 10s, sent_at + GRACE_SECONDS]`, or **[changed]** it is the one hit paired with a suppression: each suppression pairs with the single nearest hit in `[suppress − 5s, suppress + SUPPRESS_WINDOW_SECONDS]` not already explained by the send time. One view loads the image once, so a ping hides at most one hit; a forged ping (a spoofed message showing your pixel) only covers the load it caused.
+2. **`prefetch`**: the UA is exactly `Mozilla/5.0` and the request came from Apple's network (AS714: `17.0.0.0/8`, `2620:149::/32`, `2a01:b740::/32`), or the network is unknown (hits stored before 0.4). **[changed]** Apple Mail sends the same bare UA with or without Privacy Protection, so a bare UA from any other network is a real `open` on the device. The network (`apple`, `google`, `other`) is stored with each hit even when `STORE_IP=false`.
 3. **`open`**: everything else.
 
 Each hit also carries `via`: `gmail_proxy` when the UA contains `GoogleImageProxy` or the UA Gmail's proxy sends since 2026 (`… Chrome/42.0.2311.135 Safari/537.36 Edge/12.246`), or the IP is in Google's ranges; otherwise `direct`. **[added]** Each hit also carries a human-readable `reason` for its kind.
 
-The UA is set by whoever loads the image, so a recipient can always hide their own open (by blocking images or faking the UA). Classification is about filtering noise, not resisting a recipient who does not want to be tracked.
+The UA is set by whoever loads the image. Faking Apple's UA no longer hides an open (the network must be Apple's), but a recipient can still block images. Classification is about filtering noise, not forcing tracking on someone who blocks it. Classification is about filtering noise, not resisting a recipient who does not want to be tracked.
 
 Classification is computed at read time so the rules can be improved later without migrating data.
 

@@ -82,7 +82,7 @@ likelyread set-campaign ID "Another campaign"
 
 - An open means the tracking image loaded on the recipient's side. Report it as "opened", never as "read".
 - Gmail loads images through its proxy and caches them, so repeat opens by Gmail users often do not show up.
-- Apple Mail Privacy Protection loads images on delivery. Those hits are `prefetch`, not opens.
+- Apple Mail Privacy Protection loads images on delivery from Apple's network. Those hits are `prefetch`, not opens. Apple Mail without Privacy Protection loads on the device and counts as an open.
 - Some mail apps block images, so `not_opened` does not prove the email was ignored.
 - Use opens to time a follow-up, not to conclude someone is not interested.
 - Never mention tracking or opens to the recipient ("I saw you opened my email").

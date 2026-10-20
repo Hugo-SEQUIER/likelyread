@@ -15,7 +15,7 @@ Two ways to use it:
 2. When the recipient's mail client loads the image, the server logs a hit.
 3. Hits are classified when you read them:
    - **self**: your own compose preview or your own view of the sent email (the extension tells the server, and also blocks the request in your browser);
-   - **prefetch**: Apple Mail Privacy Protection loading images on delivery;
+   - **prefetch**: Apple Mail Privacy Protection loading images on delivery (bare `Mozilla/5.0` user agent from Apple's network);
    - **open**: everything else.
 
 See [SPEC.md](SPEC.md) for the full contract.
@@ -146,7 +146,7 @@ An "open" means the tracking image loaded on the recipient's side. That is what 
 | Limitation | Effect |
 |---|---|
 | Gmail image proxy | Opens by Gmail recipients show Google's IP and user agent, so there is no location. The proxy caches images, so **repeat opens may not register**. |
-| Apple Mail Privacy Protection | Apple loads images on delivery, which looks like an open. Flagged as `prefetch` by its user agent (heuristic). |
+| Apple Mail Privacy Protection | Apple loads images on delivery, which looks like an open. Flagged as `prefetch` by its bare user agent from Apple's network. The same user agent from anywhere else is Apple Mail without Privacy Protection, a real open. |
 | Images blocked by default | Some Outlook and corporate setups block images, so real opens are missed. |
 | One pixel per email | With several recipients you can't tell who opened it. |
 | Forwarding | Opens by people the email was forwarded to count as opens. |

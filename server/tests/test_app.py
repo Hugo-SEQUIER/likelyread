@@ -181,18 +181,84 @@ def test_classification_self_prefetch_open(client, clock):
 
 
 def test_suppress_window_edges(client, clock):
+    # Each ping covers one load, so every edge gets its own email and ping.
+    def kind_for(offset):
+        eid = new_id()
+        register(client, eid)
+        clock["now"] += 1000
+        client.post(f"/api/emails/{eid}/suppress", headers=AUTH)
+        clock["now"] += offset
+        hit(client, eid)
+        clock["now"] -= offset
+        return client.get(f"/api/emails/{eid}", headers=AUTH).json()["hits"][0]["kind"]
+
+    assert kind_for(-4) == "self"  # 5 s lead tolerance
+    assert kind_for(60) == "self"  # exactly at the window end
+    assert kind_for(61) == "open"  # past the window
+
+
+def test_one_ping_hides_at_most_one_load(client, clock):
+    """A ping forged by a spoofed message cannot hide a recipient's real open:
+    it pairs with the single nearest load, the one its own view caused."""
     eid = new_id()
     register(client, eid)
     clock["now"] += 1000
     client.post(f"/api/emails/{eid}/suppress", headers=AUTH)
-    clock["now"] -= 4  # 4s before suppress: self (5s lead tolerance)
-    hit(client, eid)
-    clock["now"] += 4 + 60  # exactly at window end: self
-    hit(client, eid)
-    clock["now"] += 1  # past window: open
-    hit(client, eid)
+    clock["now"] += 1
+    hit(client, eid, ua=GMAIL_UA)  # the load caused by that view
+    clock["now"] += 20
+    hit(client, eid, ua=GMAIL_UA)  # a recipient opening it meanwhile
     kinds = [h["kind"] for h in client.get(f"/api/emails/{eid}", headers=AUTH).json()["hits"]]
-    assert kinds == ["self", "self", "open"]
+    assert kinds == ["self", "open"]
+
+
+def test_two_views_two_pings(client, clock):
+    eid = new_id()
+    register(client, eid)
+    clock["now"] += 1000
+    for _ in range(2):
+        client.post(f"/api/emails/{eid}/suppress", headers=AUTH)
+        clock["now"] += 1
+        hit(client, eid, ua=GMAIL_UA)
+        clock["now"] += 30
+    d = client.get(f"/api/emails/{eid}", headers=AUTH).json()
+    assert (d["self"], d["opens"]) == (2, 0)
+
+
+def _hit_from(env, clock, ip, ua):
+    c = TestClient(likelyread.create_app(), client=(ip, 40000))
+    eid = new_id()
+    r = c.post("/api/emails", json={"id": eid, "subject": "s", "recipients": ["a@x.com"], "age": 0}, headers=AUTH)
+    assert r.status_code == 200
+    clock["now"] += 600
+    c.get(f"/p/{eid}.gif", headers={"User-Agent": ua})
+    return c.get(f"/api/emails/{eid}", headers=AUTH).json()["hits"][0]
+
+
+def test_bare_ua_from_apple_network_is_prefetch(env, clock):
+    h = _hit_from(env, clock, "17.58.100.1", APPLE_UA)
+    assert h["kind"] == "prefetch" and "Apple's network" in h["reason"]
+
+
+def test_bare_ua_from_elsewhere_is_a_real_open(env, clock):
+    """Apple Mail without Privacy Protection, or a recipient faking Apple's agent
+    to hide their open: either way the image loaded on a device."""
+    h = _hit_from(env, clock, "203.0.113.7", APPLE_UA)
+    assert h["kind"] == "open" and "outside Apple's network" in h["reason"]
+
+
+def test_network_is_kept_when_ip_storage_is_off(env, clock):
+    env.setenv("STORE_IP", "false")
+    h = _hit_from(env, clock, "203.0.113.7", APPLE_UA)
+    assert h["ip"] is None and h["kind"] == "open"
+    h = _hit_from(env, clock, "17.58.100.1", APPLE_UA)
+    assert h["kind"] == "prefetch"
+
+
+def test_proxy_detected_from_network_without_ip(env, clock):
+    env.setenv("STORE_IP", "false")
+    h = _hit_from(env, clock, "66.249.84.1", "Mozilla/5.0 (Windows NT 10.0)")
+    assert h["via"] == "gmail_proxy"
 
 
 def test_prefetch_only_status(client, clock):

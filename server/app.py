@@ -91,6 +91,10 @@ GOOGLE_PROXY_NETS = tuple(
     ipaddress.ip_network(n)
     for n in ("66.102.0.0/20", "66.249.64.0/19", "209.85.128.0/17", "72.14.192.0/18", "74.125.0.0/16", "64.233.160.0/19")
 )
+# Apple Inc. (AS714). Mail Privacy Protection loads images from here. Apple Mail
+# sends the same bare "Mozilla/5.0" user agent with or without Privacy Protection,
+# so the network is what tells a prefetch from a real open on the device.
+APPLE_NETS = tuple(ipaddress.ip_network(n) for n in ("17.0.0.0/8", "2620:149::/32", "2a01:b740::/32"))
 UA_MAX = 512
 MAX_AGE_SECONDS = 30 * 86400
 # Hits for ids that were never registered are dropped after this long. The
@@ -116,7 +120,8 @@ CREATE TABLE IF NOT EXISTS hits (
   email_id  TEXT,
   ts        REAL,
   ip        TEXT NULL,
-  ua        TEXT
+  ua        TEXT,
+  net       TEXT NULL   -- apple | google | other, kept even when STORE_IP=false
 );
 CREATE TABLE IF NOT EXISTS suppressions (
   email_id    TEXT,
@@ -193,6 +198,9 @@ class DB:
                 self.conn.execute("ALTER TABLE emails ADD COLUMN account_id TEXT")
             if "created_at" not in cols:  # server time of first registration (sent_at is client-derived)
                 self.conn.execute("ALTER TABLE emails ADD COLUMN created_at REAL")
+            hcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(hits)")}
+            if "net" not in hcols:
+                self.conn.execute("ALTER TABLE hits ADD COLUMN net TEXT")
             scols = {r["name"] for r in self.conn.execute("PRAGMA table_info(suppressions)")}
             if "account_id" not in scols:
                 self.conn.execute("ALTER TABLE suppressions ADD COLUMN account_id TEXT")
@@ -219,7 +227,13 @@ class DB:
 
 
 def explain_hit(
-    ts: float, ua: str | None, sent_at: float | None, suppressions: list[float], cfg: Settings, via: str = "direct"
+    ts: float,
+    ua: str | None,
+    sent_at: float | None,
+    suppressions: list[float],
+    cfg: Settings,
+    via: str = "direct",
+    net: str | None = None,
 ) -> tuple[str, str]:
     """Return (kind, reason). The first rule that matches wins."""
     if sent_at is not None and ts < sent_at - 10:
@@ -232,6 +246,12 @@ def explain_hit(
         if s - 5 <= ts <= s + cfg.suppress_window_seconds:
             return "self", f"{max(0, ts - s):.0f} s after you opened it yourself."
     if (ua or "").strip() == APPLE_MPP_UA:
+        if net in ("other", "google"):
+            # Without Privacy Protection, Apple Mail loads images on the device itself.
+            # This also stops a recipient hiding a real open by faking Apple's agent.
+            return "open", "Apple Mail on the device: user agent Mozilla/5.0 from outside Apple's network."
+        if net == "apple":
+            return "prefetch", "From Apple's network with user agent Mozilla/5.0: Mail Privacy Protection loading images on delivery."
         return "prefetch", "User agent is exactly Mozilla/5.0: Apple Mail loading images on delivery."
     if via == "gmail_proxy":
         return "open", "Loaded through Gmail's image proxy when the email was opened."
@@ -254,11 +274,49 @@ def _is_google_ip(ip: str | None) -> bool:
     return any(addr in net for net in GOOGLE_PROXY_NETS)
 
 
-def hit_via(ua: str | None, ip: str | None = None) -> str:
+def network_of(ip: str | None) -> str | None:
+    """apple, google or other for a valid address; None when unknown."""
+    if not ip:
+        return None
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    if any(addr in n for n in APPLE_NETS):
+        return "apple"
+    if any(addr in n for n in GOOGLE_PROXY_NETS):
+        return "google"
+    return "other"
+
+
+def hit_via(ua: str | None, ip: str | None = None, net: str | None = None) -> str:
     ua = ua or ""
-    if any(m in ua for m in GMAIL_PROXY_UA_MARKERS) or _is_google_ip(ip):
+    if any(m in ua for m in GMAIL_PROXY_UA_MARKERS) or net == "google" or _is_google_ip(ip):
         return "gmail_proxy"
     return "direct"
+
+
+def match_suppressions(hits: list, sent_at: float | None, supps: list[float], cfg: Settings) -> dict[int, float]:
+    """Pair each self-view ping with at most one hit: the nearest one in its window
+    that is not already explained by the send time. One view loads the image once,
+    so a ping can never hide more than one hit. A forged ping (for example from a
+    spoofed message showing the pixel) therefore only covers the load it caused."""
+    taken: dict[int, float] = {}
+    for s in sorted(supps):
+        best = None
+        for i, h in enumerate(hits):
+            ts = h["ts"]
+            if i in taken or not (s - 5 <= ts <= s + cfg.suppress_window_seconds):
+                continue
+            if sent_at is not None and ts <= sent_at + cfg.grace_seconds:
+                continue  # already self by the send-time rules
+            if best is None or abs(ts - s) < abs(hits[best]["ts"] - s):
+                best = i
+        if best is not None:
+            taken[best] = s
+    return taken
 
 
 def status_of(summary: dict) -> str:
@@ -320,7 +378,7 @@ class Store:
             chunk = ids[i : i + 500]
             marks = ",".join("?" * len(chunk))
             for r in self.db.query(
-                f"SELECT email_id, ts, ip, ua FROM hits WHERE email_id IN ({marks}) ORDER BY ts", chunk
+                f"SELECT email_id, ts, ip, ua, net FROM hits WHERE email_id IN ({marks}) ORDER BY ts", chunk
             ):
                 hits[r["email_id"]].append(r)
             # Only the owner's own suppress pings count, so another account cannot
@@ -334,9 +392,12 @@ class Store:
 
     def _classified(self, email: sqlite3.Row, hits: list[sqlite3.Row], supps: list[float]) -> list[dict]:
         out = []
-        for h in hits:
-            via = hit_via(h["ua"], h["ip"])
-            kind, reason = explain_hit(h["ts"], h["ua"], email["sent_at"], supps, self.cfg, via)
+        matched = match_suppressions(hits, email["sent_at"], supps, self.cfg)
+        for i, h in enumerate(hits):
+            net = h["net"] or network_of(h["ip"])
+            via = hit_via(h["ua"], h["ip"], net)
+            ping = [matched[i]] if i in matched else []
+            kind, reason = explain_hit(h["ts"], h["ua"], email["sent_at"], ping, self.cfg, via, net)
             out.append({"ts": h["ts"], "ip": h["ip"], "ua": h["ua"], "kind": kind, "via": via, "reason": reason})
         return out
 
@@ -635,8 +696,8 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             ua = (request.headers.get("user-agent") or "")[:UA_MAX]
             try:
                 db.execute(
-                    "INSERT INTO hits(email_id, ts, ip, ua) VALUES (?, ?, ?, ?)",
-                    (email_id, time.time(), ip if cfg.store_ip else None, ua),
+                    "INSERT INTO hits(email_id, ts, ip, ua, net) VALUES (?, ?, ?, ?, ?)",
+                    (email_id, time.time(), ip if cfg.store_ip else None, ua, network_of(ip)),
                 )
             except sqlite3.Error as exc:  # never break the image
                 print(f"hit insert failed: {exc}")
