@@ -319,6 +319,7 @@ def test_free_plan_tracks_but_locks_insights(client, fake, clock):
 
 def test_free_history_is_30_days_and_pro_unlocks_it(client, fake, clock):
     a = sign_in(client, fake)
+    a = client.app.state.cloud.create_token(account_id(client, a), "Chrome extension")  # outlives 30 idle days
     _, old = register(client, a, subject="old")
     clock["now"] += 40 * 86400
     register(client, a, subject="new")
@@ -454,6 +455,7 @@ def test_daily_limit_cannot_be_dodged_with_age(client, fake, monkeypatch):
 
 def test_patch_respects_free_history(client, fake, clock):
     a = sign_in(client, fake)
+    a = client.app.state.cloud.create_token(account_id(client, a), "Chrome extension")  # outlives 30 idle days
     _, old = register(client, a)
     clock["now"] += 31 * 86400
     assert client.patch(f"/api/emails/{old}", json={"campaign": "x"}, headers=H(a)).status_code == 402
@@ -554,3 +556,33 @@ def test_daily_purge_forgets_old_webhooks(client, clock):
     db.execute("INSERT INTO webhook_events(id, received_at) VALUES ('old', ?)", (NOW - 40 * 86400,))
     client.app.state.cloud.purge(NOW)
     assert db.query("SELECT COUNT(*) AS n FROM webhook_events")[0]["n"] == 0
+
+
+def test_dashboard_tokens_lapse_sooner(client, fake, clock):
+    dash = sign_in(client, fake)  # signed in from the dashboard
+    ext_token = client.app.state.cloud.create_token(account_id(client, dash), "Chrome extension")
+    clock["now"] += cloud.DASHBOARD_TOKEN_IDLE_SECONDS + 10
+    assert client.get("/api/me", headers=H(dash)).status_code == 401
+    assert client.get("/api/me", headers=H(ext_token)).status_code == 200
+
+
+def test_delete_refuses_when_polar_token_cannot_cancel(client, fake):
+    a = sign_in(client, fake)
+    webhook(client, {"type": "subscription.active", "data": _sub(account_id(client, a), "sub_x")})
+    fake.cancel_status = 403
+    assert client.delete("/api/me", headers=H(a)).status_code == 502
+    assert client.get("/api/me", headers=H(a)).status_code == 200
+
+
+def test_proxy_hits_have_their_own_limiter_table(env, clock, fake, monkeypatch):
+    monkeypatch.setattr(likelyread.RateLimiter, "MAX_KEYS", 3)
+    application = likelyread.create_app()
+    application.state.cloud.http = fake
+    proxy = TestClient(application, base_url="https://testserver", client=("66.249.80.10", 1))
+    for _ in range(5):  # fills the proxy table
+        proxy.get(f"/p/{uuid.uuid4()}.gif")
+    direct = TestClient(application, base_url="https://testserver", client=("203.0.113.9", 1))
+    eid = str(uuid.uuid4())
+    direct.get(f"/p/{eid}.gif")
+    n = application.state.db.query("SELECT COUNT(*) AS n FROM hits WHERE email_id = ?", (eid,))[0]["n"]
+    assert n == 1, "a direct open is still logged while the proxy table is full"

@@ -537,6 +537,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     db = DB(cfg.db_path)
     store = Store(db, cfg)
     limiter = RateLimiter(cfg.pixel_rate_per_min)
+    # Gmail proxy hits are keyed per (proxy ip, email) and live in their own table,
+    # so a burst of them can never fill the table that direct hits rely on.
+    proxy_limiter = RateLimiter(cfg.pixel_rate_per_min)
     cloud = None
     if cfg.mode == "cloud":
         import cloud as cloud_mod  # only loaded in cloud mode
@@ -563,6 +566,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.cfg = cfg
     app.state.limiter = limiter
+    app.state.proxy_limiter = proxy_limiter
     app.state.cloud = cloud
 
     if cfg.allowed_origins:
@@ -625,7 +629,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     def pixel(name: str, request: Request):
         email_id = name[:-4].lower() if name.endswith(".gif") else ""
         ip = request.client.host if request.client else None
-        if UUID4_RE.match(email_id) and limiter.allow(limiter_key(ip, email_id)):
+        key = limiter_key(ip, email_id)
+        bucket = proxy_limiter if "|" in key else limiter
+        if UUID4_RE.match(email_id) and bucket.allow(key):
             ua = (request.headers.get("user-agent") or "")[:UA_MAX]
             try:
                 db.execute(

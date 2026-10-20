@@ -64,6 +64,8 @@ GRACE_SECONDS = 3 * 86400
 MAX_TOKENS_PER_ACCOUNT = 20
 # A token unused for this long stops working (each use refreshes it).
 TOKEN_IDLE_SECONDS = 180 * 86400
+# Dashboard tokens live in the browser's localStorage, so they lapse sooner.
+DASHBOARD_TOKEN_IDLE_SECONDS = 30 * 86400
 # Fallback paid period when a subscription event carries no readable period end.
 DEFAULT_PERIOD_SECONDS = 32 * 86400
 GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
@@ -178,14 +180,15 @@ class Cloud:
 
     def authenticate(self, token: str) -> Principal | None:
         rows = self.db.query(
-            "SELECT a.*, t.hash, t.last_used, t.created_at AS created_at_t FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.hash = ?",
+            "SELECT a.*, t.hash, t.last_used, t.label, t.created_at AS created_at_t FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.hash = ?",
             (token_hash(token),),
         )
         if not rows:
             return None
         row = rows[0]
         now = time.time()
-        if (row["last_used"] or row["created_at_t"]) < now - TOKEN_IDLE_SECONDS:
+        idle = DASHBOARD_TOKEN_IDLE_SECONDS if row["label"] == "Dashboard" else TOKEN_IDLE_SECONDS
+        if (row["last_used"] or row["created_at_t"]) < now - idle:
             self.db.execute("DELETE FROM tokens WHERE hash = ?", (row["hash"],))
             return None
         if not row["last_used"] or row["last_used"] < now - 3600:
@@ -282,6 +285,10 @@ class Cloud:
         self.db.execute("DELETE FROM webhook_events WHERE received_at < ?", (now - 30 * 86400,))
         self.db.execute(
             "DELETE FROM tokens WHERE COALESCE(last_used, created_at) < ?", (now - TOKEN_IDLE_SECONDS,)
+        )
+        self.db.execute(
+            "DELETE FROM tokens WHERE label = 'Dashboard' AND COALESCE(last_used, created_at) < ?",
+            (now - DASHBOARD_TOKEN_IDLE_SECONDS,),
         )
 
     # ---- signed short-lived cookie for the OAuth round trip --------------
@@ -522,7 +529,9 @@ class Cloud:
             if row is not None and row["subscription_id"] and row["plan"] == "pro" and cfg.billing_enabled:
                 # Stop billing before the account disappears.
                 status, _ = self._polar(f"/v1/subscriptions/{row['subscription_id']}", method="DELETE")
-                if status not in (200, 204, 404, 403):
+                # 404: already gone. Anything else (403 = token lacks subscriptions:write)
+                # means billing continues, so refuse to delete.
+                if status not in (200, 204, 404):
                     raise HTTPException(
                         status_code=502,
                         detail="Could not cancel your subscription. Cancel it under Manage subscription, then try again.",

@@ -72,7 +72,7 @@ Everything below is a one-time setup on the cloud server.
 3. **Polar.**
    - Create an organisation.
    - Create three products: *Pro monthly* (recurring $5 a month), *Pro yearly* (recurring $36 a year) and *Lifetime* (one-time $59).
-   - Create an access token with the `checkouts:write` and `customer_sessions:write` scopes.
+   - Create an access token with the `checkouts:write`, `customer_sessions:write` and `subscriptions:write` scopes.
    - Add a webhook endpoint `https://app.likelyread.com/webhooks/polar` in Raw format, with the events listed in `deploy/cloud.env.example`.
    - Test everything in the [sandbox](https://sandbox.polar.sh) first (`POLAR_API_URL=https://sandbox-api.polar.sh`).
 4. **Server.**
@@ -111,7 +111,7 @@ Everything below is a one-time setup on the cloud server.
   - *Cancellation.* Pro stays active until the paid period ends, plus 3 days of grace. A refunded lifetime purchase goes back to Free.
 - **Hardening:**
   - *Daily limit.* It counts the server's registration time, so a client-supplied `age` cannot dodge it.
-  - *Idle tokens.* A token unused for 180 days stops working.
+  - *Idle tokens.* An extension or agent token unused for 180 days stops working; a dashboard token (kept in the browser) after 30 days.
   - *Subscription events.* An event for a subscription other than the current live one never changes the plan.
   - *One subscription at a time.* Checkout refuses a second subscription while one is live.
   - *Deleting an account.* It cancels the subscription in Polar first. A tombstone records the deleted account, so late events are recognised.
