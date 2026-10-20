@@ -3,7 +3,7 @@
 Two modes, one codebase:
 - selfhost (default): one user, one bearer token, every feature. See SPEC.md.
 - cloud (MODE=cloud): many accounts with Google sign-in, Free and Pro plans and
-  Polar billing. The cloud parts live in cloud.py.
+  Stripe billing. The cloud parts live in cloud.py.
 """
 
 from __future__ import annotations
