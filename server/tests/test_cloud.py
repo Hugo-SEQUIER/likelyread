@@ -1,10 +1,12 @@
-"""Cloud mode: accounts, isolation, plans, Google sign-in and Polar billing.
-Google and Polar are replaced with fakes; nothing leaves the machine."""
+"""Cloud mode: accounts, isolation, plans, Google sign-in and Stripe billing.
+Google and Stripe are replaced with fakes; nothing leaves the machine."""
 
 import base64
 import hashlib
 import hmac
 import json
+import os
+import sqlite3
 import time
 import urllib.parse
 import uuid
@@ -16,9 +18,10 @@ import app as likelyread
 import cloud
 
 SECRET = "s" * 40
-WEBHOOK_SECRET = "polar_whs_test_secret"
+WEBHOOK_SECRET = "whsec_test_secret"
 CLIENT_ID = "cid.apps.googleusercontent.com"
 NOW = 1_800_000_000.0
+PERIOD_END = int(NOW) + 7 * 86400
 
 
 @pytest.fixture
@@ -39,11 +42,11 @@ def env(tmp_path, monkeypatch):
         "SESSION_SECRET": SECRET,
         "GOOGLE_CLIENT_ID": CLIENT_ID,
         "GOOGLE_CLIENT_SECRET": "gsecret",
-        "POLAR_ACCESS_TOKEN": "polar_oat_test",
-        "POLAR_WEBHOOK_SECRET": WEBHOOK_SECRET,
-        "POLAR_PRODUCT_PRO_MONTHLY": "prod_month",
-        "POLAR_PRODUCT_PRO_YEARLY": "prod_year",
-        "POLAR_PRODUCT_LIFETIME": "prod_life",
+        "STRIPE_SECRET_KEY": "rk_test_likelyread",
+        "STRIPE_WEBHOOK_SECRET": WEBHOOK_SECRET,
+        "STRIPE_PRICE_PRO_MONTHLY": "price_month",
+        "STRIPE_PRICE_PRO_YEARLY": "price_year",
+        "STRIPE_PRICE_LIFETIME": "price_life",
         "ADMIN_EMAILS": "boss@likelyread.com",
         "LIFETIME_CAP": "2",
         "EXTENSION_IDS": "abcdefghijklmnopabcdefghijklmnop",
@@ -57,7 +60,16 @@ class FakeHTTP:
     def __init__(self):
         self.calls = []
         self.google = {}  # code -> claims
+        self.customers = 0
         self.cancel_status = 200
+        self.portal_status = 200
+
+    def sent(self, path):
+        """The form body of the latest call to a Stripe path, as a dict."""
+        for _, url, _, body in reversed(self.calls):
+            if url.endswith(path):
+                return dict(urllib.parse.parse_qsl(body.decode())) if body else {}
+        return None
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, headers, body))
@@ -68,12 +80,17 @@ class FakeHTTP:
                 return 400, {"error": "invalid_grant"}
             enc = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()  # noqa: E731
             return 200, {"id_token": f"{enc({'alg': 'RS256'})}.{enc(claims)}.sig", "access_token": "x"}
-        if url.endswith("/v1/checkouts/"):
-            return 201, {"url": "https://polar.sh/checkout/abc", "id": "chk_1"}
+        if url.endswith("/v1/customers") and method == "POST":
+            self.customers += 1
+            return 200, {"id": f"cus_{self.customers}", "object": "customer"}
+        if url.endswith("/v1/checkout/sessions"):
+            return 200, {"id": "cs_test_1", "url": "https://checkout.stripe.com/c/pay/cs_test_1"}
         if "/v1/subscriptions/" in url and method == "DELETE":
             return self.cancel_status, {}
-        if url.endswith("/v1/customer-sessions/"):
-            return 201, {"customer_portal_url": "https://polar.sh/portal/xyz"}
+        if url.endswith("/v1/billing_portal/sessions"):
+            if self.portal_status != 200:
+                return self.portal_status, {"error": {"message": "No configuration provided"}}
+            return 200, {"url": "https://billing.stripe.com/p/session/xyz"}
         return 404, {}
 
 
@@ -125,21 +142,36 @@ def register(client, token, eid=None, **kw):
     return client.post("/api/emails", json=body, headers=H(token)), eid
 
 
-def webhook(client, event, msg_id=None, ts=None, secret=WEBHOOK_SECRET):
+def webhook(client, kind, obj, event_id=None, ts=None, secret=WEBHOOK_SECRET):
+    """Deliver a Stripe event the way Stripe signs it."""
+    event = {"id": event_id or f"evt_{uuid.uuid4().hex}", "object": "event", "type": kind, "data": {"object": obj}}
     body = json.dumps(event).encode()
-    msg_id = msg_id or f"msg_{uuid.uuid4().hex}"
     ts = str(int(ts if ts is not None else NOW))
-    sig = base64.b64encode(hmac.new(secret.encode(), f"{msg_id}.{ts}.".encode() + body, hashlib.sha256).digest()).decode()
+    sig = hmac.new(secret.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
     return client.post(
-        "/webhooks/polar",
+        "/webhooks/stripe",
         content=body,
-        headers={"webhook-id": msg_id, "webhook-timestamp": ts, "webhook-signature": f"v1,{sig}",
-                 "content-type": "application/json"},
+        headers={"stripe-signature": f"t={ts},v1={sig}", "content-type": "application/json"},
     )
 
 
 def account_id(client, token):
     return client.app.state.cloud.authenticate(token).account_id
+
+
+def _sub(acct, sid, status="active", end=PERIOD_END, **over):
+    """A Stripe subscription as recent API versions send it: the period end is on the item."""
+    s = {"id": sid, "object": "subscription", "status": status, "customer": "cus_test", "cancel_at_period_end": False,
+         "metadata": {"account_id": acct, "plan": "pro_yearly"},
+         "items": {"data": [{"price": {"id": "price_year"}, "current_period_end": end}]}}
+    s.update(over)
+    return s
+
+
+def _lifetime_session(acct, pi="pi_life", paid=True):
+    return {"id": "cs_life", "object": "checkout.session", "mode": "payment", "payment_intent": pi,
+            "payment_status": "paid" if paid else "unpaid", "client_reference_id": acct,
+            "metadata": {"account_id": acct, "plan": "lifetime"}}
 
 
 # ---- configuration -------------------------------------------------------------
@@ -346,80 +378,157 @@ def test_free_daily_limit(client, fake, clock, monkeypatch):
 # ---- billing ---------------------------------------------------------------------
 
 
-def test_checkout_uses_account_as_external_customer(client, fake):
+def test_checkout_creates_one_customer_and_a_taxed_subscription(client, fake):
     a = sign_in(client, fake)
+    acct = account_id(client, a)
     r = client.post("/api/billing/checkout", json={"plan": "pro_yearly"}, headers=H(a))
-    assert r.json() == {"url": "https://polar.sh/checkout/abc"}
-    method, url, headers, body = fake.calls[-1]
-    sent = json.loads(body)
-    assert url == "https://api.polar.sh/v1/checkouts/"
-    assert headers["Authorization"] == "Bearer polar_oat_test"
-    assert sent["products"] == ["prod_year"] and sent["external_customer_id"] == account_id(client, a)
-    assert sent["customer_email"] == "ann@example.com"
+    assert r.json() == {"url": "https://checkout.stripe.com/c/pay/cs_test_1"}
+    assert fake.sent("/v1/customers") == {"email": "ann@example.com", "metadata[account_id]": acct}
+    _, url, headers, _ = next(c for c in fake.calls if c[1].endswith("/v1/customers"))
+    assert url == "https://api.stripe.com/v1/customers"
+    assert headers["Authorization"] == "Bearer rk_test_likelyread"
+    assert headers["Idempotency-Key"] == f"likelyread-customer-{acct}-{int(NOW // 600)}"
+    sent = fake.sent("/v1/checkout/sessions")
+    assert sent["mode"] == "subscription" and sent["customer"] == "cus_1" and sent["client_reference_id"] == acct
+    assert sent["line_items[0][price]"] == "price_year" and sent["line_items[0][quantity]"] == "1"
+    assert sent["metadata[plan]"] == "pro_yearly" and sent["subscription_data[metadata][account_id]"] == acct
+    assert sent["automatic_tax[enabled]"] == "true" and sent["tax_id_collection[enabled]"] == "true"
+    assert sent["customer_update[address]"] == "auto" and sent["customer_update[name]"] == "auto"
+    # The next checkout reuses the customer.
+    client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(a))
+    assert fake.customers == 1 and fake.sent("/v1/checkout/sessions")["customer"] == "cus_1"
     assert client.post("/api/billing/checkout", json={"plan": "gold"}, headers=H(a)).status_code == 422
+
+
+def test_lifetime_checkout_is_a_one_time_payment_with_an_invoice(client, fake):
+    a = sign_in(client, fake)
+    client.post("/api/billing/checkout", json={"plan": "lifetime"}, headers=H(a))
+    sent = fake.sent("/v1/checkout/sessions")
+    assert sent["mode"] == "payment" and sent["line_items[0][price]"] == "price_life"
+    assert sent["invoice_creation[enabled]"] == "true" and "subscription_data[metadata][account_id]" not in sent
+
+
+def test_stripe_tax_can_be_switched_off(client, fake):
+    assert cloud.CloudSettings({**os.environ, "STRIPE_TAX": "false"}).stripe_tax is False
+    client.app.state.cloud.cfg.stripe_tax = False
+    a = sign_in(client, fake)
+    client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(a))
+    assert fake.sent("/v1/checkout/sessions")["automatic_tax[enabled]"] == "false"
 
 
 def test_subscription_lifecycle(client, fake, clock):
     a = sign_in(client, fake)
     acct = account_id(client, a)
-    end = "2027-01-15T00:00:00Z"
-    sub = {"id": "sub_1", "status": "active", "current_period_end": end, "cancel_at_period_end": False,
-           "customer": {"external_id": acct}, "product_id": "prod_month"}
-    assert webhook(client, {"type": "subscription.active", "data": sub}).json()["result"] == "pro"
+    # The subscription's own events decide the plan, not the checkout.
+    done = {"id": "cs_1", "object": "checkout.session", "mode": "subscription", "payment_status": "paid",
+            "metadata": {"account_id": acct, "plan": "pro_yearly"}}
+    assert webhook(client, "checkout.session.completed", done).json()["result"] == "ignored: subscription checkout"
+    assert webhook(client, "customer.subscription.created", _sub(acct, "sub_1")).json()["result"] == "pro"
     me = client.get("/api/me", headers=H(a)).json()
-    assert me["plan"] == "pro" and client.get("/api/campaigns", headers=H(a)).status_code == 200
-    # Cancelled: keeps Pro until the period (plus grace) ends.
-    webhook(client, {"type": "subscription.canceled", "data": {**sub, "status": "canceled", "cancel_at_period_end": True}})
+    assert me["plan"] == "pro" and me["plan_until"] == PERIOD_END
+    assert client.get("/api/campaigns", headers=H(a)).status_code == 200
+    # Cancelled in the portal: keeps Pro until the period (plus grace) ends.
+    webhook(client, "customer.subscription.updated", _sub(acct, "sub_1", cancel_at_period_end=True))
     me = client.get("/api/me", headers=H(a)).json()
     assert me["plan"] == "pro" and me["cancel_at_period_end"] is True
-    clock["now"] = cloud._iso_ts(end) + cloud.GRACE_SECONDS + 1
+    clock["now"] = PERIOD_END + cloud.GRACE_SECONDS + 1
     assert client.get("/api/me", headers=H(a)).json()["plan"] == "free"
-    # Revoked: free at once.
+    # Deleted, so ended: free at once.
     clock["now"] = NOW
-    webhook(client, {"type": "subscription.active", "data": sub})
-    webhook(client, {"type": "subscription.revoked", "data": {**sub, "status": "revoked"}})
+    webhook(client, "customer.subscription.updated", _sub(acct, "sub_1"))
+    assert client.get("/api/me", headers=H(a)).json()["plan"] == "pro"
+    webhook(client, "customer.subscription.deleted", _sub(acct, "sub_1", status="canceled"))
     assert client.get("/api/me", headers=H(a)).json()["plan"] == "free"
+
+
+def test_period_end_is_read_from_old_and_new_api_versions():
+    assert cloud._period_end({"current_period_end": 1_700_000_000}) == 1_700_000_000
+    items = {"data": [{"current_period_end": 1_700_000_000}, {"current_period_end": 1_700_000_500}]}
+    assert cloud._period_end({"items": items}) == 1_700_000_500
+    assert cloud._period_end({"status": "active"}) is None
 
 
 def test_lifetime_purchase_cap_and_refund(client, fake):
     tokens = [sign_in(client, fake, f"g{i}", f"u{i}@x.com") for i in range(3)]
-    for t in tokens[:2]:
-        order = {"id": "ord", "product_id": "prod_life", "customer": {"external_id": account_id(client, t)}}
-        assert webhook(client, {"type": "order.paid", "data": order}).json()["result"] == "lifetime"
+    for i, t in enumerate(tokens[:2]):
+        assert client.post("/api/billing/checkout", json={"plan": "lifetime"}, headers=H(t)).status_code == 200
+        r = webhook(client, "checkout.session.completed", _lifetime_session(account_id(client, t), pi=f"pi_{i}"))
+        assert r.json()["result"] == "lifetime"
     assert client.get("/api/me", headers=H(tokens[0])).json()["plan"] == "pro"
     r = client.post("/api/billing/checkout", json={"plan": "lifetime"}, headers=H(tokens[2]))
     assert r.status_code == 410
     r = client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(tokens[0]))
     assert r.status_code == 409  # already lifetime
-    order = {"id": "ord", "product_id": "prod_life", "customer": {"external_id": account_id(client, tokens[0])}}
-    webhook(client, {"type": "order.refunded", "data": order})
+    # A refund names the Stripe customer, not the account. Only a full refund of
+    # the lifetime payment itself ends lifetime access.
+    charge = {"id": "ch_0", "object": "charge", "customer": "cus_1", "payment_intent": "pi_0", "refunded": False}
+    assert webhook(client, "charge.refunded", charge).json()["result"] == "ignored"
+    other = {**charge, "refunded": True, "payment_intent": "pi_other"}
+    assert webhook(client, "charge.refunded", other).json()["result"] == "ignored"
+    full = {**charge, "refunded": True}
+    assert webhook(client, "charge.refunded", full).json()["result"] == "lifetime refunded"
     assert client.get("/api/me", headers=H(tokens[0])).json()["plan"] == "free"
+
+
+def test_lifetime_waits_for_a_delayed_payment(client, fake):
+    a = sign_in(client, fake)
+    acct = account_id(client, a)
+    r = webhook(client, "checkout.session.completed", _lifetime_session(acct, paid=False))
+    assert r.json()["result"] == "ignored: payment pending"
+    assert client.get("/api/me", headers=H(a)).json()["plan"] == "free"
+    r = webhook(client, "checkout.session.async_payment_succeeded", _lifetime_session(acct))
+    assert r.json()["result"] == "lifetime"
 
 
 def test_webhook_rejects_bad_signature_and_old_timestamp(client, fake):
     a = sign_in(client, fake)
-    ev = {"type": "order.paid", "data": {"product_id": "prod_life", "customer": {"external_id": account_id(client, a)}}}
-    assert webhook(client, ev, secret="wrong").status_code == 403
-    assert webhook(client, ev, ts=NOW - 3600).status_code == 403
+    obj = _lifetime_session(account_id(client, a))
+    assert webhook(client, "checkout.session.completed", obj, secret="whsec_wrong").status_code == 403
+    assert webhook(client, "checkout.session.completed", obj, ts=NOW - 3600).status_code == 403
+    assert client.post("/webhooks/stripe", content=b"{}", headers={"content-type": "application/json"}).status_code == 403
     assert client.get("/api/me", headers=H(a)).json()["plan"] == "free"
+
+
+def test_webhook_accepts_either_secret_while_one_is_rolled(client, fake):
+    """While a signing secret is rolled, Stripe sends one v1 signature per secret."""
+    a = sign_in(client, fake)
+    event = {"id": "evt_roll", "type": "checkout.session.completed",
+             "data": {"object": _lifetime_session(account_id(client, a))}}
+    body = json.dumps(event).encode()
+    ts = str(int(NOW))
+    sig = lambda s: hmac.new(s.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()  # noqa: E731
+    header = f"t={ts},v1={sig('whsec_old_secret')},v1={sig(WEBHOOK_SECRET)}"
+    r = client.post("/webhooks/stripe", content=body, headers={"stripe-signature": header, "content-type": "application/json"})
+    assert r.json()["result"] == "lifetime"
 
 
 def test_webhook_is_idempotent(client, fake):
     a = sign_in(client, fake)
-    ev = {"type": "order.paid", "data": {"product_id": "prod_life", "customer": {"external_id": account_id(client, a)}}}
-    assert webhook(client, ev, msg_id="m1").json()["result"] == "lifetime"
-    assert webhook(client, ev, msg_id="m1").json() == {"ok": True, "duplicate": True}
+    obj = _lifetime_session(account_id(client, a))
+    assert webhook(client, "checkout.session.completed", obj, event_id="evt_1").json()["result"] == "lifetime"
+    assert webhook(client, "checkout.session.completed", obj, event_id="evt_1").json() == {"ok": True, "duplicate": True}
 
 
 def test_webhook_for_unknown_account_is_ignored(client):
-    ev = {"type": "order.paid", "data": {"product_id": "prod_life", "customer": {"external_id": "nobody"}}}
-    assert webhook(client, ev).json()["result"].startswith("ignored")
+    r = webhook(client, "checkout.session.completed", _lifetime_session("nobody"))
+    assert r.json()["result"].startswith("ignored")
+
+
+def test_events_without_metadata_map_through_the_customer(client, fake):
+    a = sign_in(client, fake)
+    client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(a))  # creates cus_1
+    sub = _sub(account_id(client, a), "sub_1", metadata={}, customer="cus_1")
+    assert webhook(client, "customer.subscription.created", sub).json()["result"] == "pro"
 
 
 def test_portal(client, fake):
     a = sign_in(client, fake)
-    assert client.post("/api/billing/portal", headers=H(a)).json() == {"url": "https://polar.sh/portal/xyz"}
-    assert json.loads(fake.calls[-1][3])["external_customer_id"] == account_id(client, a)
+    assert client.post("/api/billing/portal", headers=H(a)).status_code == 404  # no Stripe customer yet
+    client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(a))
+    assert client.post("/api/billing/portal", headers=H(a)).json() == {"url": "https://billing.stripe.com/p/session/xyz"}
+    assert fake.sent("/v1/billing_portal/sessions") == {"customer": "cus_1", "return_url": "https://app.likelyread.com/#/account"}
+    fake.portal_status = 400  # the customer portal is not saved in Stripe's settings
+    assert client.post("/api/billing/portal", headers=H(a)).status_code == 502
 
 
 def test_admin_stats_only_for_admins(client, fake):
@@ -461,23 +570,18 @@ def test_patch_respects_free_history(client, fake, clock):
     assert client.patch(f"/api/emails/{old}", json={"campaign": "x"}, headers=H(a)).status_code == 402
 
 
-def _sub(acct, sid, status="active", end="2027-06-01T00:00:00Z"):
-    return {"id": sid, "status": status, "current_period_end": end, "cancel_at_period_end": False,
-            "customer": {"external_id": acct}, "product_id": "prod_year"}
-
-
-def test_old_subscription_revocation_does_not_downgrade(client, fake):
+def test_old_subscription_ending_does_not_downgrade(client, fake):
     a = sign_in(client, fake)
     acct = account_id(client, a)
-    webhook(client, {"type": "subscription.active", "data": _sub(acct, "sub_B")})
-    r = webhook(client, {"type": "subscription.revoked", "data": _sub(acct, "sub_A", "revoked")})
+    webhook(client, "customer.subscription.created", _sub(acct, "sub_B"))
+    r = webhook(client, "customer.subscription.deleted", _sub(acct, "sub_A", status="canceled"))
     assert r.json()["result"] == "ignored: not the current subscription"
     assert client.get("/api/me", headers=H(a)).json()["plan"] == "pro"
 
 
 def test_no_second_subscription_while_pro(client, fake):
     a = sign_in(client, fake)
-    webhook(client, {"type": "subscription.active", "data": _sub(account_id(client, a), "sub_1")})
+    webhook(client, "customer.subscription.created", _sub(account_id(client, a), "sub_1"))
     r = client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(a))
     assert r.status_code == 409
 
@@ -486,28 +590,28 @@ def test_lifetime_over_cap_still_granted_but_flagged(client, fake):
     tokens = [sign_in(client, fake, f"g{i}", f"u{i}@x.com") for i in range(3)]
     results = []
     for t in tokens:
-        order = {"id": "o", "product_id": "prod_life", "customer": {"external_id": account_id(client, t)}}
-        results.append(webhook(client, {"type": "order.paid", "data": order}).json()["result"])
+        r = webhook(client, "checkout.session.completed", _lifetime_session(account_id(client, t)))
+        results.append(r.json()["result"])
     assert results == ["lifetime", "lifetime", "lifetime (over cap)"]
 
 
 def test_delete_cancels_subscription_and_tombstones(client, fake):
     a = sign_in(client, fake)
     acct = account_id(client, a)
-    webhook(client, {"type": "subscription.active", "data": _sub(acct, "sub_9")})
+    webhook(client, "customer.subscription.created", _sub(acct, "sub_9"))
     fake.cancel_status = 500
     assert client.delete("/api/me", headers=H(a)).status_code == 502
     assert client.get("/api/me", headers=H(a)).status_code == 200  # nothing deleted
     fake.cancel_status = 200
     assert client.delete("/api/me", headers=H(a)).status_code == 200
     assert any(c[0] == "DELETE" and c[1].endswith("/v1/subscriptions/sub_9") for c in fake.calls)
-    r = webhook(client, {"type": "subscription.revoked", "data": _sub(acct, "sub_9", "revoked")})
+    r = webhook(client, "customer.subscription.deleted", _sub(acct, "sub_9", status="canceled"))
     assert r.json()["result"] == "ignored: deleted account"
 
 
 def test_failed_webhook_is_applied_on_retry(client, fake, monkeypatch):
     a = sign_in(client, fake)
-    ev = {"type": "order.paid", "data": {"product_id": "prod_life", "customer": {"external_id": account_id(client, a)}}}
+    obj = _lifetime_session(account_id(client, a))
     real = client.app.state.cloud.handle_event
     calls = {"n": 0}
 
@@ -519,8 +623,8 @@ def test_failed_webhook_is_applied_on_retry(client, fake, monkeypatch):
 
     monkeypatch.setattr(client.app.state.cloud, "handle_event", flaky)
     with pytest.raises(RuntimeError):
-        webhook(client, ev, msg_id="m-retry")
-    assert webhook(client, ev, msg_id="m-retry").json()["result"] == "lifetime"
+        webhook(client, "checkout.session.completed", obj, event_id="evt_retry")
+    assert webhook(client, "checkout.session.completed", obj, event_id="evt_retry").json()["result"] == "lifetime"
 
 
 def test_suppress_on_foreign_id_writes_nothing(client, fake):
@@ -538,19 +642,6 @@ def test_idle_tokens_expire(client, fake, clock):
     assert client.get("/api/me", headers=H(a)).status_code == 401
 
 
-def test_webhook_accepts_spec_derived_key(client, fake):
-    a = sign_in(client, fake)
-    raw = b"0123456789abcdef0123456789abcdef"
-    client.app.state.cloud.cfg.polar_webhook_secret = "whsec_" + base64.b64encode(raw).decode()
-    ev = {"type": "order.paid", "data": {"product_id": "prod_life", "customer": {"external_id": account_id(client, a)}}}
-    body = json.dumps(ev).encode()
-    ts = str(int(NOW))
-    sig = base64.b64encode(hmac.new(raw, f"m-spec.{ts}.".encode() + body, hashlib.sha256).digest()).decode()
-    r = client.post("/webhooks/polar", content=body, headers={"webhook-id": "m-spec", "webhook-timestamp": ts,
-                    "webhook-signature": f"v1,{sig}", "content-type": "application/json"})
-    assert r.json()["result"] == "lifetime"
-
-
 def test_daily_purge_forgets_old_webhooks(client, clock):
     db = client.app.state.db
     db.execute("INSERT INTO webhook_events(id, received_at) VALUES ('old', ?)", (NOW - 40 * 86400,))
@@ -566,9 +657,9 @@ def test_dashboard_tokens_lapse_sooner(client, fake, clock):
     assert client.get("/api/me", headers=H(ext_token)).status_code == 200
 
 
-def test_delete_refuses_when_polar_token_cannot_cancel(client, fake):
+def test_delete_refuses_when_stripe_key_cannot_cancel(client, fake):
     a = sign_in(client, fake)
-    webhook(client, {"type": "subscription.active", "data": _sub(account_id(client, a), "sub_x")})
+    webhook(client, "customer.subscription.created", _sub(account_id(client, a), "sub_x"))
     fake.cancel_status = 403
     assert client.delete("/api/me", headers=H(a)).status_code == 502
     assert client.get("/api/me", headers=H(a)).status_code == 200
@@ -586,3 +677,19 @@ def test_proxy_hits_have_their_own_limiter_table(env, clock, fake, monkeypatch):
     direct.get(f"/p/{eid}.gif")
     n = application.state.db.query("SELECT COUNT(*) AS n FROM hits WHERE email_id = ?", (eid,))[0]["n"]
     assert n == 1, "a direct open is still logged while the proxy table is full"
+
+
+def test_database_from_before_stripe_gets_the_new_columns(env, tmp_path):
+    path = tmp_path / "before-stripe.db"
+    env.setenv("DB_PATH", str(path))
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE accounts (id TEXT PRIMARY KEY, email TEXT NOT NULL, google_sub TEXT UNIQUE, "
+        "created_at REAL NOT NULL, plan TEXT NOT NULL DEFAULT 'free', plan_until REAL, subscription_id TEXT, "
+        "subscription_status TEXT, cancel_at_period_end INTEGER NOT NULL DEFAULT 0)"
+    )
+    con.commit()
+    con.close()
+    likelyread.create_app()
+    cols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(accounts)")}
+    assert {"customer_id", "lifetime_payment"} <= cols

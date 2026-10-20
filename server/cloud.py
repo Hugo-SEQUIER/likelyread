@@ -1,4 +1,4 @@
-"""Likelyread Cloud: accounts, Google sign-in, plans and Polar billing.
+"""Likelyread Cloud: accounts, Google sign-in, plans and Stripe billing.
 
 Loaded only when MODE=cloud. Every request is tied to an account through a
 bearer token (one per signed-in browser or extension), and app.py scopes all
@@ -19,7 +19,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -38,7 +37,9 @@ CREATE TABLE IF NOT EXISTS accounts (
   plan_until           REAL,                           -- end of the paid period (pro)
   subscription_id      TEXT,
   subscription_status  TEXT,
-  cancel_at_period_end INTEGER NOT NULL DEFAULT 0
+  cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+  customer_id          TEXT,                           -- Stripe customer, created at first checkout
+  lifetime_payment     TEXT                            -- Stripe PaymentIntent of the lifetime purchase
 );
 CREATE TABLE IF NOT EXISTS tokens (
   hash        TEXT PRIMARY KEY,   -- sha256 of the token; the token itself is never stored
@@ -85,13 +86,24 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _iso_ts(value: Any) -> float | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
+def _period_end(sub: dict) -> float | None:
+    """When a Stripe subscription's paid period ends. API versions before
+    2025-03-31 put it on the subscription, later ones on each item."""
+    items = (sub.get("items") or {}).get("data") or []
+    ends = [sub.get("current_period_end")] + [i.get("current_period_end") for i in items]
+    ends = [float(e) for e in ends if isinstance(e, (int, float)) and e > 0]
+    return max(ends) if ends else None
+
+
+def stripe_form(value: Any, name: str = "") -> list[tuple[str, str]]:
+    """Stripe's form encoding: nested dicts and lists become a[b][0][c]=v."""
+    if isinstance(value, dict):
+        return [p for k, v in value.items() for p in stripe_form(v, f"{name}[{k}]" if name else str(k))]
+    if isinstance(value, (list, tuple)):
+        return [p for i, v in enumerate(value) for p in stripe_form(v, f"{name}[{i}]")]
+    if value is None:
+        return []
+    return [(name, "true" if value is True else "false" if value is False else str(value))]
 
 
 class CloudSettings:
@@ -103,14 +115,16 @@ class CloudSettings:
         self.google_client_secret = e.get("GOOGLE_CLIENT_SECRET", "")
         self.google_auth_url = e.get("GOOGLE_AUTH_URL", "https://accounts.google.com/o/oauth2/v2/auth")
         self.google_token_url = e.get("GOOGLE_TOKEN_URL", "https://oauth2.googleapis.com/token")
-        self.polar_api_url = (e.get("POLAR_API_URL") or "https://api.polar.sh").rstrip("/")
-        self.polar_access_token = e.get("POLAR_ACCESS_TOKEN", "")
-        self.polar_webhook_secret = e.get("POLAR_WEBHOOK_SECRET", "")
-        self.products = {
-            "pro_monthly": e.get("POLAR_PRODUCT_PRO_MONTHLY", ""),
-            "pro_yearly": e.get("POLAR_PRODUCT_PRO_YEARLY", ""),
-            "lifetime": e.get("POLAR_PRODUCT_LIFETIME", ""),
+        self.stripe_api_url = (e.get("STRIPE_API_URL") or "https://api.stripe.com").rstrip("/")
+        self.stripe_secret_key = e.get("STRIPE_SECRET_KEY", "")
+        self.stripe_webhook_secret = e.get("STRIPE_WEBHOOK_SECRET", "")
+        self.price_ids = {
+            "pro_monthly": e.get("STRIPE_PRICE_PRO_MONTHLY", ""),
+            "pro_yearly": e.get("STRIPE_PRICE_PRO_YEARLY", ""),
+            "lifetime": e.get("STRIPE_PRICE_LIFETIME", ""),
         }
+        # Stripe Tax adds VAT and sales tax at checkout; off only while it is not set up.
+        self.stripe_tax = e.get("STRIPE_TAX", "true").strip().lower() not in ("0", "false", "no", "off")
         self.prices = {
             "pro_monthly": e.get("PRICE_PRO_MONTHLY", "$5"),
             "pro_yearly": e.get("PRICE_PRO_YEARLY", "$36"),
@@ -134,7 +148,7 @@ class CloudSettings:
 
     @property
     def billing_enabled(self) -> bool:
-        return bool(self.polar_access_token and self.polar_webhook_secret and all(self.products.values()))
+        return bool(self.stripe_secret_key and self.stripe_webhook_secret and all(self.price_ids.values()))
 
     @property
     def redirect_uri(self) -> str:
@@ -167,6 +181,12 @@ class Cloud:
         self.http: Callable[[str, str, dict, bytes | None], tuple[int, dict]] = http_json
         with db.lock:
             db.conn.executescript(SCHEMA)
+            # Databases created before Stripe billing lack its two columns.
+            have = {r[1] for r in db.conn.execute("PRAGMA table_info(accounts)")}
+            for col in ("customer_id", "lifetime_payment"):
+                if col not in have:
+                    db.conn.execute(f"ALTER TABLE accounts ADD COLUMN {col} TEXT")
+            db.conn.execute("CREATE INDEX IF NOT EXISTS idx_accounts_customer ON accounts(customer_id)")
 
     # ---- accounts and tokens -------------------------------------------
 
@@ -347,99 +367,113 @@ class Cloud:
             raise ValueError("no verified email")
         return str(claims["sub"]), str(claims["email"])
 
-    # ---- Polar -----------------------------------------------------------
+    # ---- Stripe ----------------------------------------------------------
 
-    def _polar(self, path: str, payload: dict | None = None, method: str = "POST") -> tuple[int, dict]:
-        return self.http(
-            method,
-            f"{self.cfg.polar_api_url}{path}",
-            {"Authorization": f"Bearer {self.cfg.polar_access_token}", "Content-Type": "application/json"},
-            json.dumps(payload).encode() if payload is not None else None,
+    def _stripe(
+        self, path: str, params: dict | None = None, method: str = "POST", idempotency_key: str = ""
+    ) -> tuple[int, dict]:
+        headers = {"Authorization": f"Bearer {self.cfg.stripe_secret_key}"}
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        body = None
+        if params is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            body = urllib.parse.urlencode(stripe_form(params)).encode()
+        return self.http(method, f"{self.cfg.stripe_api_url}{path}", headers, body)
+
+    def _customer_for(self, row: Any) -> str:
+        """The account's Stripe customer, created on its first checkout. The
+        idempotency key makes a double click create one customer, not two. It
+        changes every 10 minutes: Stripe replays a key's first result for a day,
+        failures included, and a failed attempt must not block the next one."""
+        if row["customer_id"]:
+            return row["customer_id"]
+        status, data = self._stripe(
+            "/v1/customers",
+            {"email": row["email"], "metadata": {"account_id": row["id"]}},
+            idempotency_key=f"likelyread-customer-{row['id']}-{int(time.time() // 600)}",
         )
+        if status != 200 or not data.get("id"):
+            print(f"stripe customer failed: {status} {str(data)[:300]}")
+            raise HTTPException(status_code=502, detail="could not start checkout")
+        self.db.execute("UPDATE accounts SET customer_id = ? WHERE id = ?", (data["id"], row["id"]))
+        return str(data["id"])
 
     def has_live_subscription(self, row: Any, now: float | None = None) -> bool:
         return row["plan"] == "pro" and self.effective_plan(row, now) == "pro" and bool(row["subscription_id"])
 
     def verify_webhook(self, headers: Any, body: bytes, now: float | None = None) -> bool:
-        """Standard Webhooks signature (what Polar uses). Polar signs with the raw
-        secret, so the HMAC key is the secret's bytes."""
-        msg_id = headers.get("webhook-id", "")
-        ts = headers.get("webhook-timestamp", "")
-        sigs = headers.get("webhook-signature", "")
-        if not (msg_id and ts and sigs and self.cfg.polar_webhook_secret):
+        """Stripe's signature: Stripe-Signature carries t=<unix time> and a v1=<hex
+        HMAC-SHA256 of "t.body"> per signing secret (two while one is rolled)."""
+        secret = self.cfg.stripe_webhook_secret
+        parts = [p.strip().partition("=") for p in headers.get("stripe-signature", "").split(",")]
+        ts = next((v for k, _, v in parts if k == "t"), "")
+        sigs = [v for k, _, v in parts if k == "v1"]
+        if not (secret and ts and sigs):
             return False
         try:
             if abs((time.time() if now is None else now) - int(ts)) > WEBHOOK_TOLERANCE:
                 return False
         except ValueError:
             return False
-        signed = f"{msg_id}.{ts}.".encode() + body
-        wants = [base64.b64encode(hmac.new(k, signed, hashlib.sha256).digest()) for k in self._webhook_keys()]
-        for part in sigs.split():
-            version, _, sig = part.partition(",")
-            if version == "v1" and any(hmac.compare_digest(sig.encode(), w) for w in wants):
-                return True
-        return False
+        want = hmac.new(secret.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+        return any(hmac.compare_digest(want, sig) for sig in sigs)
 
-    def _webhook_keys(self) -> list[bytes]:
-        """Polar signs with the raw secret today; the Standard Webhooks spec derives
-        the key by base64-decoding the secret after its prefix. Accept both, so a
-        change on Polar's side does not reject every delivery."""
-        secret = self.cfg.polar_webhook_secret
-        keys = [secret.encode()]
-        tail = secret.split("_")[-1] if secret.startswith(("whsec_", "polar_whs_")) else secret
-        try:
-            decoded = base64.b64decode(tail + "=" * (-len(tail) % 4), validate=True)
-            if decoded and decoded not in keys:
-                keys.append(decoded)
-        except ValueError:
-            pass
-        return keys
-
-    def _account_from(self, data: dict) -> str | None:
-        customer = data.get("customer") or {}
-        meta = data.get("metadata") or {}
-        acct = customer.get("external_id") or meta.get("account_id")
+    def _account_from(self, obj: dict) -> str | None:
+        """Checkout puts the account id in metadata (and client_reference_id); any
+        other object still names the Stripe customer created for the account."""
+        meta = obj.get("metadata") or {}
+        acct = meta.get("account_id") or obj.get("client_reference_id")
         if acct and self.account(str(acct)) is not None:
             return str(acct)
+        customer = obj.get("customer")
+        if isinstance(customer, str) and customer:
+            rows = self.db.query("SELECT id FROM accounts WHERE customer_id = ?", (customer,))
+            if rows:
+                return rows[0]["id"]
         return None
-
-    def _product_id(self, data: dict) -> str | None:
-        return data.get("product_id") or (data.get("product") or {}).get("id")
 
     def handle_event(self, event: dict) -> str:
         kind = event.get("type", "")
-        data = event.get("data") or {}
-        acct = self._account_from(data)
+        obj = (event.get("data") or {}).get("object") or {}
+        acct = self._account_from(obj)
         if acct is None:
-            customer = data.get("customer") or {}
-            ext = customer.get("external_id") or (data.get("metadata") or {}).get("account_id")
+            ext = (obj.get("metadata") or {}).get("account_id") or obj.get("client_reference_id")
             if ext and self.db.query("SELECT 1 FROM deleted_accounts WHERE id = ?", (str(ext),)):
-                print(f"billing event {kind} for deleted account {ext}: check Polar")
+                print(f"billing event {kind} for deleted account {ext}: check Stripe")
                 return "ignored: deleted account"
             return "ignored: unknown account"
         row = self.account(acct)
-        lifetime = self.cfg.products["lifetime"]
-        if kind == "order.paid":
-            if lifetime and self._product_id(data) == lifetime:
-                # The cap is enforced at checkout. Concurrent checkouts can still pass
-                # it; a paying customer always gets what they paid for, so only warn.
-                over = self.lifetime_left() <= 0 and row["plan"] != "lifetime"
-                if over:
-                    print(f"lifetime cap exceeded by account {acct}")
-                self.db.execute("UPDATE accounts SET plan = 'lifetime', plan_until = NULL WHERE id = ?", (acct,))
-                return "lifetime (over cap)" if over else "lifetime"
-            return "ignored: subscription order"
-        if kind == "order.refunded":
-            if lifetime and self._product_id(data) == lifetime and row["plan"] == "lifetime":
+        if kind in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+            if obj.get("mode") != "payment" or (obj.get("metadata") or {}).get("plan") != "lifetime":
+                return "ignored: subscription checkout"
+            if obj.get("payment_status") != "paid":
+                # A delayed method such as a bank debit: async_payment_succeeded follows.
+                return "ignored: payment pending"
+            # The cap is enforced at checkout. Concurrent checkouts can still pass
+            # it; a paying customer always gets what they paid for, so only warn.
+            over = self.lifetime_left() <= 0 and row["plan"] != "lifetime"
+            if over:
+                print(f"lifetime cap exceeded by account {acct}")
+            self.db.execute(
+                "UPDATE accounts SET plan = 'lifetime', plan_until = NULL, lifetime_payment = ? WHERE id = ?",
+                (obj.get("payment_intent"), acct),
+            )
+            return "lifetime (over cap)" if over else "lifetime"
+        if kind == "charge.refunded":
+            # Only a full refund of the lifetime payment itself ends lifetime access.
+            pi = obj.get("payment_intent")
+            if row["plan"] == "lifetime" and obj.get("refunded") and pi and pi == row["lifetime_payment"]:
                 self.db.execute("UPDATE accounts SET plan = 'free' WHERE id = ?", (acct,))
                 return "lifetime refunded"
             return "ignored"
-        if kind.startswith("subscription."):
-            status = data.get("status") or ""
-            sub_id = data.get("id")
-            until = _iso_ts(data.get("current_period_end")) or _iso_ts(data.get("ends_at"))
-            cancel = 1 if data.get("cancel_at_period_end") else 0
+        if kind.startswith("customer.subscription."):
+            status = obj.get("status") or ""
+            sub_id = obj.get("id")
+            until = _period_end(obj)
+            # Cancelling in the customer portal ends the subscription at the period
+            # end (cancel_at_period_end, or cancel_at in newer API versions).
+            cancel = 1 if obj.get("cancel_at_period_end") or obj.get("cancel_at") else 0
             if row["plan"] == "lifetime":
                 return "ignored: lifetime"
             current = row["subscription_id"]
@@ -448,11 +482,12 @@ class Cloud:
                 if status in ("active", "trialing"):
                     print(f"second live subscription {sub_id} for account {acct} (current {current})")
                 return "ignored: not the current subscription"
-            if kind == "subscription.revoked" or status in ("revoked", "incomplete_expired"):
+            if kind == "customer.subscription.deleted" or status in ("canceled", "incomplete_expired"):
+                # The subscription has ended: canceled is final in Stripe.
                 self.db.execute(
                     "UPDATE accounts SET plan = 'free', plan_until = NULL, subscription_status = ?, "
                     "cancel_at_period_end = 0 WHERE id = ?",
-                    (status or "revoked", acct),
+                    (status or "canceled", acct),
                 )
                 return "free"
             if status in ("active", "trialing"):
@@ -465,7 +500,7 @@ class Cloud:
                     (until, sub_id, status, cancel, acct),
                 )
                 return "pro"
-            # past_due, canceled, unpaid: keep access until the paid period (plus grace) ends.
+            # incomplete, past_due, unpaid, paused: keep access until the paid period (plus grace) ends.
             self.db.execute(
                 "UPDATE accounts SET subscription_status = ?, cancel_at_period_end = ? WHERE id = ?",
                 (status, cancel, acct),
@@ -528,9 +563,9 @@ class Cloud:
             row = self.account(p.account_id or "")
             if row is not None and row["subscription_id"] and row["plan"] == "pro" and cfg.billing_enabled:
                 # Stop billing before the account disappears.
-                status, _ = self._polar(f"/v1/subscriptions/{row['subscription_id']}", method="DELETE")
-                # 404: already gone. Anything else (403 = token lacks subscriptions:write)
-                # means billing continues, so refuse to delete.
+                status, _ = self._stripe(f"/v1/subscriptions/{row['subscription_id']}", method="DELETE")
+                # 404: already gone. Anything else (403 = the restricted key lacks
+                # Subscriptions write) means billing continues, so refuse to delete.
                 if status not in (200, 204, 404):
                     raise HTTPException(
                         status_code=502,
@@ -583,19 +618,28 @@ class Cloud:
                 raise HTTPException(status_code=409, detail="You already have Pro. Change your plan under Manage subscription.")
             if body.plan == "lifetime" and self.lifetime_left() <= 0:
                 raise HTTPException(status_code=410, detail="lifetime deals are sold out")
-            status, data = self._polar(
-                "/v1/checkouts/",
-                {
-                    "products": [cfg.products[body.plan]],
-                    "external_customer_id": row["id"],
-                    "customer_email": row["email"],
-                    "success_url": f"{cfg.public_url}/#/account?checkout=success",
-                    "return_url": f"{cfg.public_url}/#/account",
-                    "metadata": {"account_id": row["id"], "plan": body.plan},
-                },
-            )
-            if status not in (200, 201) or not data.get("url"):
-                print(f"polar checkout failed: {status} {str(data)[:300]}")
+            lifetime = body.plan == "lifetime"
+            meta = {"account_id": row["id"], "plan": body.plan}
+            params: dict[str, Any] = {
+                "mode": "payment" if lifetime else "subscription",
+                "customer": self._customer_for(row),
+                "client_reference_id": row["id"],
+                "line_items": [{"price": cfg.price_ids[body.plan], "quantity": 1}],
+                "success_url": f"{cfg.public_url}/#/account?checkout=success",
+                "cancel_url": f"{cfg.public_url}/#/account",
+                "metadata": meta,
+                "automatic_tax": {"enabled": cfg.stripe_tax},
+                # Stripe Tax needs the buyer's address; a business can add its VAT number.
+                "customer_update": {"address": "auto", "name": "auto"},
+                "tax_id_collection": {"enabled": True},
+            }
+            if lifetime:
+                params["invoice_creation"] = {"enabled": True}  # subscriptions are invoiced anyway
+            else:
+                params["subscription_data"] = {"metadata": meta}
+            status, data = self._stripe("/v1/checkout/sessions", params)
+            if status != 200 or not data.get("url"):
+                print(f"stripe checkout failed: {status} {str(data)[:300]}")
                 raise HTTPException(status_code=502, detail="could not start checkout")
             return {"url": data["url"]}
 
@@ -603,31 +647,40 @@ class Cloud:
         def portal(p: Principal = Depends(principal)):
             if not cfg.billing_enabled:
                 raise HTTPException(status_code=503, detail="billing is not configured")
-            status, data = self._polar(
-                "/v1/customer-sessions/",
-                {"external_customer_id": p.account_id, "return_url": f"{cfg.public_url}/#/account"},
-            )
-            if status not in (200, 201) or not data.get("customer_portal_url"):
+            row = self.account(p.account_id or "")
+            if row is None or not row["customer_id"]:
                 raise HTTPException(status_code=404, detail="no billing account yet")
-            return {"url": data["customer_portal_url"]}
+            status, data = self._stripe(
+                "/v1/billing_portal/sessions",
+                {"customer": row["customer_id"], "return_url": f"{cfg.public_url}/#/account"},
+            )
+            if status != 200 or not data.get("url"):
+                # Usually the customer portal has not been saved in Stripe's settings yet.
+                print(f"stripe portal failed: {status} {str(data)[:300]}")
+                raise HTTPException(status_code=502, detail="could not open the billing portal")
+            return {"url": data["url"]}
 
-        @app.post("/webhooks/polar")
-        async def polar_webhook(request: Request):
+        @app.post("/webhooks/stripe")
+        async def stripe_webhook(request: Request):
             body = await request.body()
             if not self.verify_webhook(request.headers, body):
                 return JSONResponse({"error": "invalid signature"}, status_code=403)
-            msg_id = request.headers["webhook-id"]
             try:
                 event = json.loads(body)
             except ValueError:
                 return {"ok": True, "result": "ignored: not JSON"}
-            # One lock for check, apply and record: a delivery is applied once, and a
-            # failure (500) leaves no record, so Polar's retry applies it.
+            event_id = str(event.get("id") or "") if isinstance(event, dict) else ""
+            if not event_id:
+                return {"ok": True, "result": "ignored: no event id"}
+            # One lock for check, apply and record: an event is applied once, and a
+            # failure (500) leaves no record, so Stripe's retry applies it.
             with self.db.lock:
-                if self.db.conn.execute("SELECT 1 FROM webhook_events WHERE id = ?", (msg_id,)).fetchone():
+                if self.db.conn.execute("SELECT 1 FROM webhook_events WHERE id = ?", (event_id,)).fetchone():
                     return {"ok": True, "duplicate": True}
-                result = self.handle_event(event if isinstance(event, dict) else {})
-                self.db.conn.execute("INSERT INTO webhook_events(id, received_at) VALUES (?, ?)", (msg_id, time.time()))
+                result = self.handle_event(event)
+                self.db.conn.execute(
+                    "INSERT INTO webhook_events(id, received_at) VALUES (?, ?)", (event_id, time.time())
+                )
             return {"ok": True, "result": result}
 
         @app.get("/api/admin/stats")

@@ -1,8 +1,8 @@
 // End-to-end for Likelyread Cloud: real Chromium + the extension built for a local
-// cloud server + fake Google sign-in + fake Polar checkout, all on this machine.
+// cloud server + fake Google sign-in + fake Stripe Checkout, all on this machine.
 //
 // Run from extension/:  CHROME_PATH=/path/to/chrome PYTHON=python3 npm run e2e:cloud
-// Ports 8782 (cloud server), 8794 (fake Google) and 8795 (fake Polar) must be free.
+// Ports 8782 (cloud server), 8794 (fake Google) and 8795 (fake Stripe) must be free.
 // SHOTS=dir saves screenshots of each screen.
 import { chromium } from "playwright-core";
 import { spawn, execFileSync } from "node:child_process";
@@ -23,9 +23,9 @@ const PY = process.env.PYTHON || "python3";
 const SHOTS = process.env.SHOTS || "";
 const CLOUD = "http://localhost:8782";
 const GOOGLE = "http://localhost:8794";
-const POLAR = "http://localhost:8795";
+const STRIPE = "http://localhost:8795";
 const CLIENT_ID = "e2e-client.apps.googleusercontent.com";
-const WEBHOOK_SECRET = "polar_whs_e2e_secret_value";
+const WEBHOOK_SECRET = "whsec_e2e_secret_value";
 const results = [];
 const check = (name, ok, detail = "") => { results.push({ name, ok: !!ok }); console.log(`${ok ? "PASS" : "FAIL"} ${name} ${detail}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -54,33 +54,41 @@ const googleSrv = http.createServer(async (req, res) => {
   res.writeHead(404); res.end();
 }).listen(8794, "127.0.0.1");
 
-// --- fake Polar: checkout page that "pays", sends the signed webhook, returns to the app
+// --- fake Stripe: Checkout page that "pays", sends the signed webhook, returns to the app
 const checkouts = new Map();
-async function sendWebhook(event) {
-  const body = JSON.stringify(event);
-  const id = `msg_${crypto.randomUUID()}`, ts = String(Math.floor(Date.now() / 1000));
-  const sig = crypto.createHmac("sha256", WEBHOOK_SECRET).update(`${id}.${ts}.${body}`).digest("base64");
-  const r = await fetch(`${CLOUD}/webhooks/polar`, { method: "POST", body, headers: { "content-type": "application/json", "webhook-id": id, "webhook-timestamp": ts, "webhook-signature": `v1,${sig}` } });
+async function sendWebhook(type, object) {
+  const body = JSON.stringify({ id: `evt_${crypto.randomUUID()}`, object: "event", type, data: { object } });
+  const ts = String(Math.floor(Date.now() / 1000));
+  const sig = crypto.createHmac("sha256", WEBHOOK_SECRET).update(`${ts}.${body}`).digest("hex");
+  const r = await fetch(`${CLOUD}/webhooks/stripe`, { method: "POST", body, headers: { "content-type": "application/json", "stripe-signature": `t=${ts},v1=${sig}` } });
   return r.status;
 }
-const polarSrv = http.createServer(async (req, res) => {
-  const u = new URL(req.url, POLAR);
-  if (u.pathname === "/v1/checkouts/" && req.method === "POST") {
-    if (req.headers.authorization !== "Bearer polar_oat_e2e") { res.writeHead(401); return res.end("{}"); }
+const stripeSrv = http.createServer(async (req, res) => {
+  const u = new URL(req.url, STRIPE);
+  const reply = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
+  if (u.pathname.startsWith("/v1/")) {
+    if (req.headers.authorization !== "Bearer rk_test_e2e") return reply(401, {});
     let body = ""; for await (const c of req) body += c;
-    const data = JSON.parse(body);
-    const id = crypto.randomUUID();
-    checkouts.set(id, data);
-    res.writeHead(201, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ id, url: `${POLAR}/pay/${id}` }));
+    const form = Object.fromEntries(new URLSearchParams(body));
+    if (u.pathname === "/v1/customers" && req.method === "POST") return reply(200, { id: "cus_e2e", object: "customer", email: form.email });
+    if (u.pathname === "/v1/checkout/sessions" && req.method === "POST") {
+      const id = `cs_test_${crypto.randomUUID()}`;
+      checkouts.set(id, form);
+      return reply(200, { id, object: "checkout.session", url: `${STRIPE}/pay/${id}` });
+    }
+    return reply(404, {});
   }
   if (u.pathname.startsWith("/pay/")) {
-    const data = checkouts.get(u.pathname.slice(5));
-    if (!data) { res.writeHead(404); return res.end(); }
-    const end = new Date(Date.now() + 365 * 86400e3).toISOString();
-    const status = await sendWebhook({ type: "subscription.active", data: { id: "sub_e2e", status: "active", current_period_end: end, cancel_at_period_end: false, product_id: data.products[0], customer: { external_id: data.external_customer_id } } });
-    checkouts.set("last", { ...data, webhook: status });
-    res.writeHead(302, { location: data.success_url }); return res.end();
+    const form = checkouts.get(u.pathname.slice(5));
+    if (!form) { res.writeHead(404); return res.end(); }
+    const end = Math.floor(Date.now() / 1000) + 365 * 86400;
+    const status = await sendWebhook("customer.subscription.created", {
+      id: "sub_e2e", object: "subscription", status: "active", customer: form.customer, cancel_at_period_end: false,
+      metadata: { account_id: form["subscription_data[metadata][account_id]"], plan: form["subscription_data[metadata][plan]"] },
+      items: { data: [{ price: { id: form["line_items[0][price]"] }, current_period_end: end }] },
+    });
+    checkouts.set("last", { ...form, webhook: status });
+    res.writeHead(302, { location: form.success_url }); return res.end();
   }
   res.writeHead(404); res.end();
 }).listen(8795, "127.0.0.1");
@@ -94,8 +102,8 @@ server = spawn(PY, ["-m", "uvicorn", "app:create_app", "--factory", "--port", "8
     ...process.env, MODE: "cloud", DB_PATH: path.join(WORK, "cloud.db"), PUBLIC_URL: CLOUD,
     SESSION_SECRET: "e2e-session-secret-0123456789abcdef", GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: "x",
     GOOGLE_AUTH_URL: `${GOOGLE}/auth`, GOOGLE_TOKEN_URL: `${GOOGLE}/token`,
-    POLAR_API_URL: POLAR, POLAR_ACCESS_TOKEN: "polar_oat_e2e", POLAR_WEBHOOK_SECRET: WEBHOOK_SECRET,
-    POLAR_PRODUCT_PRO_MONTHLY: "prod_m", POLAR_PRODUCT_PRO_YEARLY: "prod_y", POLAR_PRODUCT_LIFETIME: "prod_l",
+    STRIPE_API_URL: STRIPE, STRIPE_SECRET_KEY: "rk_test_e2e", STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+    STRIPE_PRICE_PRO_MONTHLY: "price_m", STRIPE_PRICE_PRO_YEARLY: "price_y", STRIPE_PRICE_LIFETIME: "price_l",
     EXTENSION_IDS: extId,
   },
 });
@@ -179,7 +187,7 @@ try {
   await tab.click("text=Choose yearly");
   await tab.waitForURL(/checkout=success/, { timeout: 10000 });
   const last = checkouts.get("last") || {};
-  check("checkout sent the account and yearly product", last.products?.[0] === "prod_y" && last.customer_email === "ann@example.com" && last.webhook === 200);
+  check("checkout sent the account, its customer and the yearly price", last["line_items[0][price]"] === "price_y" && last.customer === "cus_e2e" && !!last.client_reference_id && last["automatic_tax[enabled]"] === "true" && last.webhook === 200);
   await tab.waitForSelector(".headline h1", { timeout: 5000 });
   await sleep(300);
   check("account is Pro after payment", (await tab.textContent(".headline h1")).startsWith("Pro"));
@@ -206,7 +214,7 @@ try {
   await ctx.close();
   server?.kill();
   googleSrv.close();
-  polarSrv.close();
+  stripeSrv.close();
   fs.rmSync(EXT, { recursive: true, force: true });
 }
 const failed = results.filter((r) => !r.ok).length;
