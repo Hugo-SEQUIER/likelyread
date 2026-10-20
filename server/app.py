@@ -108,7 +108,8 @@ CREATE TABLE IF NOT EXISTS emails (
   sent_at     REAL,
   campaign    TEXT,
   sender      TEXT,
-  account_id  TEXT
+  account_id  TEXT,
+  created_at  REAL
 );
 CREATE TABLE IF NOT EXISTS hits (
   id        INTEGER PRIMARY KEY,
@@ -190,11 +191,14 @@ class DB:
                 self.conn.execute("ALTER TABLE emails ADD COLUMN sender TEXT")
             if "account_id" not in cols:  # databases created before accounts existed
                 self.conn.execute("ALTER TABLE emails ADD COLUMN account_id TEXT")
+            if "created_at" not in cols:  # server time of first registration (sent_at is client-derived)
+                self.conn.execute("ALTER TABLE emails ADD COLUMN created_at REAL")
             scols = {r["name"] for r in self.conn.execute("PRAGMA table_info(suppressions)")}
             if "account_id" not in scols:
                 self.conn.execute("ALTER TABLE suppressions ADD COLUMN account_id TEXT")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_campaign ON emails(campaign)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_account ON emails(account_id, sent_at)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_created ON emails(account_id, created_at)")
 
     def execute(self, sql: str, params: tuple | list = ()) -> sqlite3.Cursor:
         with self.lock:
@@ -545,6 +549,8 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             while True:
                 try:
                     await asyncio.to_thread(purge_old, db, cfg)
+                    if cloud is not None:
+                        await asyncio.to_thread(cloud.purge)
                 except Exception as exc:  # keep the loop alive
                     print(f"retention purge failed: {exc}")
                 await asyncio.sleep(86400)
@@ -654,21 +660,22 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=409, detail="id belongs to another account")
             limit = p.features["daily_limit"]
             if existing is None and limit is not None:
+                # created_at is server time: a client-chosen age cannot dodge the limit.
                 n = db.conn.execute(
-                    "SELECT COUNT(*) FROM emails WHERE account_id IS ? AND sent_at >= ?", (acct, now - 86400)
+                    "SELECT COUNT(*) FROM emails WHERE account_id IS ? AND created_at >= ?", (acct, now - 86400)
                 ).fetchone()[0]
                 if n >= limit:
                     raise HTTPException(status_code=429, detail={"error": "daily_limit", "limit": limit})
             # Upsert: a retried registration carries the same data; a re-send after a
             # failed or undone send updates the record to the real send.
             db.conn.execute(
-                """INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender, account_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender, account_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET subject=excluded.subject, recipients=excluded.recipients,
                    sent_at=excluded.sent_at, campaign=COALESCE(excluded.campaign, emails.campaign),
                    sender=COALESCE(excluded.sender, emails.sender)
                    WHERE emails.account_id IS excluded.account_id""",
-                (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign, body.sender, acct),
+                (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign, body.sender, acct, now),
             )
         return {"ok": True, "id": body.id, "sent_at": sent_at}
 
@@ -677,6 +684,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         email_id = email_id.lower()
         if not UUID4_RE.match(email_id):
             raise HTTPException(status_code=422, detail="id must be a UUIDv4")
+        if p.account_id is not None:
+            # Cloud: only for the caller's own emails. (Self-host keeps pings for ids
+            # whose registration is still in flight.)
+            if not db.query("SELECT 1 FROM emails WHERE id = ? AND account_id = ?", (email_id, p.account_id)):
+                return {"ok": True}
         db.execute(
             "INSERT INTO suppressions(email_id, ts, account_id) VALUES (?, ?, ?)", (email_id, time.time(), p.account_id)
         )
@@ -713,12 +725,14 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     @app.patch("/api/emails/{email_id}")
     def patch_email(email_id: str, body: EmailPatch, p: Principal = Depends(principal)):
         email_id = email_id.lower()
+        if store.one(p.account_id, email_id, p.since()) is None:  # raises 402 past the free history
+            raise HTTPException(status_code=404, detail="not found")
         cur = db.execute(
             "UPDATE emails SET campaign = ? WHERE id = ? AND account_id IS ?", (body.campaign, email_id, p.account_id)
         )
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="not found")
-        return store.one(p.account_id, email_id)
+        return store.one(p.account_id, email_id, p.since())
 
     @app.delete("/api/emails/{email_id}")
     def delete_email(email_id: str, p: Principal = Depends(principal)):

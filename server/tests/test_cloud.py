@@ -46,6 +46,7 @@ def env(tmp_path, monkeypatch):
         "POLAR_PRODUCT_LIFETIME": "prod_life",
         "ADMIN_EMAILS": "boss@likelyread.com",
         "LIFETIME_CAP": "2",
+        "EXTENSION_IDS": "abcdefghijklmnopabcdefghijklmnop",
     }.items():
         monkeypatch.setenv(k, v)
     monkeypatch.delenv("LIKELYREAD_TOKEN", raising=False)
@@ -56,6 +57,7 @@ class FakeHTTP:
     def __init__(self):
         self.calls = []
         self.google = {}  # code -> claims
+        self.cancel_status = 200
 
     def __call__(self, method, url, headers, body):
         self.calls.append((method, url, headers, body))
@@ -68,6 +70,8 @@ class FakeHTTP:
             return 200, {"id_token": f"{enc({'alg': 'RS256'})}.{enc(claims)}.sig", "access_token": "x"}
         if url.endswith("/v1/checkouts/"):
             return 201, {"url": "https://polar.sh/checkout/abc", "id": "chk_1"}
+        if "/v1/subscriptions/" in url and method == "DELETE":
+            return self.cancel_status, {}
         if url.endswith("/v1/customer-sessions/"):
             return 201, {"customer_portal_url": "https://polar.sh/portal/xyz"}
         return 404, {}
@@ -189,8 +193,8 @@ def test_extension_sign_in_marks_the_link(client, fake):
     fake.google["c1"] = google_claims("g-9", "e@x.com")
     r = client.get(f"/auth/google/callback?code=c1&state={q['state']}")
     assert r.headers["location"].endswith(f"&ext={ext}")
-    # Anything that is not an extension id is dropped.
-    r = client.get("/auth/google?ext=javascript:alert(1)")
+    # Anything that is not an allowed extension id is dropped, even a well-formed one.
+    r = client.get("/auth/google?ext=ponmlkjihgfedcbaponmlkjihgfedcba")
     q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(r.headers["location"]).query))
     fake.google["c2"] = google_claims("g-9", "e@x.com")
     r = client.get(f"/auth/google/callback?code=c2&state={q['state']}")
@@ -434,3 +438,119 @@ def test_gmail_proxy_rate_limit_is_per_email(env, clock, fake, monkeypatch):
     for eid in ids:
         c.get(f"/p/{eid}.gif")
     assert application.state.db.query("SELECT COUNT(*) AS n FROM hits")[0]["n"] == 3
+
+
+# ---- regressions from the security review -----------------------------------
+
+
+def test_daily_limit_cannot_be_dodged_with_age(client, fake, monkeypatch):
+    monkeypatch.setitem(likelyread.FEATURES["free"], "daily_limit", 3)
+    a = sign_in(client, fake)
+    for _ in range(3):
+        assert register(client, a, age=172800)[0].status_code == 200
+    assert register(client, a, age=172800)[0].status_code == 429
+    assert client.get("/api/me", headers=H(a)).json()["usage"]["today"] == 3
+
+
+def test_patch_respects_free_history(client, fake, clock):
+    a = sign_in(client, fake)
+    _, old = register(client, a)
+    clock["now"] += 31 * 86400
+    assert client.patch(f"/api/emails/{old}", json={"campaign": "x"}, headers=H(a)).status_code == 402
+
+
+def _sub(acct, sid, status="active", end="2027-06-01T00:00:00Z"):
+    return {"id": sid, "status": status, "current_period_end": end, "cancel_at_period_end": False,
+            "customer": {"external_id": acct}, "product_id": "prod_year"}
+
+
+def test_old_subscription_revocation_does_not_downgrade(client, fake):
+    a = sign_in(client, fake)
+    acct = account_id(client, a)
+    webhook(client, {"type": "subscription.active", "data": _sub(acct, "sub_B")})
+    r = webhook(client, {"type": "subscription.revoked", "data": _sub(acct, "sub_A", "revoked")})
+    assert r.json()["result"] == "ignored: not the current subscription"
+    assert client.get("/api/me", headers=H(a)).json()["plan"] == "pro"
+
+
+def test_no_second_subscription_while_pro(client, fake):
+    a = sign_in(client, fake)
+    webhook(client, {"type": "subscription.active", "data": _sub(account_id(client, a), "sub_1")})
+    r = client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(a))
+    assert r.status_code == 409
+
+
+def test_lifetime_over_cap_still_granted_but_flagged(client, fake):
+    tokens = [sign_in(client, fake, f"g{i}", f"u{i}@x.com") for i in range(3)]
+    results = []
+    for t in tokens:
+        order = {"id": "o", "product_id": "prod_life", "customer": {"external_id": account_id(client, t)}}
+        results.append(webhook(client, {"type": "order.paid", "data": order}).json()["result"])
+    assert results == ["lifetime", "lifetime", "lifetime (over cap)"]
+
+
+def test_delete_cancels_subscription_and_tombstones(client, fake):
+    a = sign_in(client, fake)
+    acct = account_id(client, a)
+    webhook(client, {"type": "subscription.active", "data": _sub(acct, "sub_9")})
+    fake.cancel_status = 500
+    assert client.delete("/api/me", headers=H(a)).status_code == 502
+    assert client.get("/api/me", headers=H(a)).status_code == 200  # nothing deleted
+    fake.cancel_status = 200
+    assert client.delete("/api/me", headers=H(a)).status_code == 200
+    assert any(c[0] == "DELETE" and c[1].endswith("/v1/subscriptions/sub_9") for c in fake.calls)
+    r = webhook(client, {"type": "subscription.revoked", "data": _sub(acct, "sub_9", "revoked")})
+    assert r.json()["result"] == "ignored: deleted account"
+
+
+def test_failed_webhook_is_applied_on_retry(client, fake, monkeypatch):
+    a = sign_in(client, fake)
+    ev = {"type": "order.paid", "data": {"product_id": "prod_life", "customer": {"external_id": account_id(client, a)}}}
+    real = client.app.state.cloud.handle_event
+    calls = {"n": 0}
+
+    def flaky(event):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db hiccup")
+        return real(event)
+
+    monkeypatch.setattr(client.app.state.cloud, "handle_event", flaky)
+    with pytest.raises(RuntimeError):
+        webhook(client, ev, msg_id="m-retry")
+    assert webhook(client, ev, msg_id="m-retry").json()["result"] == "lifetime"
+
+
+def test_suppress_on_foreign_id_writes_nothing(client, fake):
+    a = sign_in(client, fake, "g-a", "a@x.com")
+    b = sign_in(client, fake, "g-b", "b@x.com")
+    _, eid = register(client, a)
+    assert client.post(f"/api/emails/{eid}/suppress", headers=H(b)).status_code == 200
+    assert client.post(f"/api/emails/{uuid.uuid4()}/suppress", headers=H(b)).status_code == 200
+    assert client.app.state.db.query("SELECT COUNT(*) AS n FROM suppressions")[0]["n"] == 0
+
+
+def test_idle_tokens_expire(client, fake, clock):
+    a = sign_in(client, fake)
+    clock["now"] += cloud.TOKEN_IDLE_SECONDS + 10
+    assert client.get("/api/me", headers=H(a)).status_code == 401
+
+
+def test_webhook_accepts_spec_derived_key(client, fake):
+    a = sign_in(client, fake)
+    raw = b"0123456789abcdef0123456789abcdef"
+    client.app.state.cloud.cfg.polar_webhook_secret = "whsec_" + base64.b64encode(raw).decode()
+    ev = {"type": "order.paid", "data": {"product_id": "prod_life", "customer": {"external_id": account_id(client, a)}}}
+    body = json.dumps(ev).encode()
+    ts = str(int(NOW))
+    sig = base64.b64encode(hmac.new(raw, f"m-spec.{ts}.".encode() + body, hashlib.sha256).digest()).decode()
+    r = client.post("/webhooks/polar", content=body, headers={"webhook-id": "m-spec", "webhook-timestamp": ts,
+                    "webhook-signature": f"v1,{sig}", "content-type": "application/json"})
+    assert r.json()["result"] == "lifetime"
+
+
+def test_daily_purge_forgets_old_webhooks(client, clock):
+    db = client.app.state.db
+    db.execute("INSERT INTO webhook_events(id, received_at) VALUES ('old', ?)", (NOW - 40 * 86400,))
+    client.app.state.cloud.purge(NOW)
+    assert db.query("SELECT COUNT(*) AS n FROM webhook_events")[0]["n"] == 0

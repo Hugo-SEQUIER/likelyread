@@ -89,7 +89,8 @@ Everything below is a one-time setup on the cloud server.
    17 3 * * * root bash /opt/likelyread/deploy/backup.sh --dir /opt/likelyread >> /var/log/likelyread-backup.log 2>&1
    ```
    Copy `deploy/data/backups/` off the machine as well, for example with `rclone` to Cloudflare R2.
-6. **Admin.** Put your email in `ADMIN_EMAILS`. Your Account page then shows accounts, paying users, weekly actives, and emails and hits in the last 24 h.
+6. **Extension id.** Uploading the draft to the Chrome Web Store assigns the extension its id. Put that id in `EXTENSION_IDS` and restart the server. Only listed extensions receive the token after sign-in. Until then, the sign-in page asks the user to paste their setup link instead.
+7. **Admin.** Put your email in `ADMIN_EMAILS`. Your Account page then shows accounts, paying users, weekly actives, and emails and hits in the last 24 h.
 
 ## How it works
 
@@ -108,8 +109,17 @@ Everything below is a one-time setup on the cloud server.
   - *Checkout.* It uses `external_customer_id = account id`, so webhooks map straight to the account.
   - *Webhooks.* They are verified with the Standard Webhooks signature, which Polar uses, and deduplicated by `webhook-id`.
   - *Cancellation.* Pro stays active until the paid period ends, plus 3 days of grace. A refunded lifetime purchase goes back to Free.
+- **Hardening:**
+  - *Daily limit.* It counts the server's registration time, so a client-supplied `age` cannot dodge it.
+  - *Idle tokens.* A token unused for 180 days stops working.
+  - *Subscription events.* An event for a subscription other than the current live one never changes the plan.
+  - *One subscription at a time.* Checkout refuses a second subscription while one is live.
+  - *Deleting an account.* It cancels the subscription in Polar first. A tombstone records the deleted account, so late events are recognised.
+  - *Webhooks.* A webhook id is recorded only after the event is applied, so Polar's retry of a failed delivery works.
+  - *Signature key.* Webhook signatures are checked with both the raw secret and the key derived by the Standard Webhooks spec.
+  - *Lifetime cap.* It is enforced at checkout. A purchase that slips past it in a race is still honoured and logged.
 - **Data rights:**
-  - *Export.* `GET /api/me/export` returns everything held for the account.
+  - *Export.* `GET /api/me/export` returns everything held for the account, including emails older than the Free history window. Data portability covers all of the user's data, so the export is not gated by plan.
   - *Deletion.* `DELETE /api/me` removes the account and all of its data.
 
 ## Tests

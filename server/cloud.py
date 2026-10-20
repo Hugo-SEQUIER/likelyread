@@ -52,12 +52,20 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   id           TEXT PRIMARY KEY,
   received_at  REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS deleted_accounts (
+  id          TEXT PRIMARY KEY,   -- so late billing events for a deleted account are recognised
+  deleted_at  REAL NOT NULL
+);
 """
 
 PLANS = ("pro_monthly", "pro_yearly", "lifetime")
 # A paid period keeps working this long after it ends, to cover renewal delays.
 GRACE_SECONDS = 3 * 86400
 MAX_TOKENS_PER_ACCOUNT = 20
+# A token unused for this long stops working (each use refreshes it).
+TOKEN_IDLE_SECONDS = 180 * 86400
+# Fallback paid period when a subscription event carries no readable period end.
+DEFAULT_PERIOD_SECONDS = 32 * 86400
 GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
 WEBHOOK_TOLERANCE = 300
 EXTENSION_ID_RE = re.compile(r"^[a-p]{32}$")
@@ -108,6 +116,9 @@ class CloudSettings:
         }
         self.lifetime_cap = int(e.get("LIFETIME_CAP", "500"))
         self.admin_emails = {a.strip().lower() for a in e.get("ADMIN_EMAILS", "").split(",") if a.strip()}
+        # Chrome extension ids allowed to receive the token after sign-in (the store
+        # id, plus an unpacked id while developing). Any other ?ext= is ignored.
+        self.extension_ids = {x.strip() for x in e.get("EXTENSION_IDS", "").split(",") if EXTENSION_ID_RE.match(x.strip())}
 
         problems = []
         if not (self.public_url.startswith("https://") or self.public_url.startswith(("http://localhost", "http://127.0.0.1"))):
@@ -167,13 +178,16 @@ class Cloud:
 
     def authenticate(self, token: str) -> Principal | None:
         rows = self.db.query(
-            "SELECT a.*, t.hash, t.last_used FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.hash = ?",
+            "SELECT a.*, t.hash, t.last_used, t.created_at AS created_at_t FROM tokens t JOIN accounts a ON a.id = t.account_id WHERE t.hash = ?",
             (token_hash(token),),
         )
         if not rows:
             return None
         row = rows[0]
         now = time.time()
+        if (row["last_used"] or row["created_at_t"]) < now - TOKEN_IDLE_SECONDS:
+            self.db.execute("DELETE FROM tokens WHERE hash = ?", (row["hash"],))
+            return None
         if not row["last_used"] or row["last_used"] < now - 3600:
             self.db.execute("UPDATE tokens SET last_used = ? WHERE hash = ?", (now, row["hash"]))
         return Principal(account_id=row["id"], plan=self.effective_plan(row, now), email=row["email"])
@@ -231,7 +245,7 @@ class Cloud:
         if row is None:
             raise HTTPException(status_code=401, detail="invalid token")
         today = self.db.query(
-            "SELECT COUNT(*) AS n FROM emails WHERE account_id = ? AND sent_at >= ?", (row["id"], time.time() - 86400)
+            "SELECT COUNT(*) AS n FROM emails WHERE account_id = ? AND created_at >= ?", (row["id"], time.time() - 86400)
         )[0]["n"]
         return {
             "mode": "cloud",
@@ -260,6 +274,15 @@ class Cloud:
             c.execute("DELETE FROM emails WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM tokens WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            c.execute("INSERT OR REPLACE INTO deleted_accounts(id, deleted_at) VALUES (?, ?)", (account_id, time.time()))
+
+    def purge(self, now: float | None = None) -> None:
+        """Daily: forget old webhook ids and idle tokens."""
+        now = time.time() if now is None else now
+        self.db.execute("DELETE FROM webhook_events WHERE received_at < ?", (now - 30 * 86400,))
+        self.db.execute(
+            "DELETE FROM tokens WHERE COALESCE(last_used, created_at) < ?", (now - TOKEN_IDLE_SECONDS,)
+        )
 
     # ---- signed short-lived cookie for the OAuth round trip --------------
 
@@ -319,13 +342,16 @@ class Cloud:
 
     # ---- Polar -----------------------------------------------------------
 
-    def _polar(self, path: str, payload: dict) -> tuple[int, dict]:
+    def _polar(self, path: str, payload: dict | None = None, method: str = "POST") -> tuple[int, dict]:
         return self.http(
-            "POST",
+            method,
             f"{self.cfg.polar_api_url}{path}",
             {"Authorization": f"Bearer {self.cfg.polar_access_token}", "Content-Type": "application/json"},
-            json.dumps(payload).encode(),
+            json.dumps(payload).encode() if payload is not None else None,
         )
+
+    def has_live_subscription(self, row: Any, now: float | None = None) -> bool:
+        return row["plan"] == "pro" and self.effective_plan(row, now) == "pro" and bool(row["subscription_id"])
 
     def verify_webhook(self, headers: Any, body: bytes, now: float | None = None) -> bool:
         """Standard Webhooks signature (what Polar uses). Polar signs with the raw
@@ -341,12 +367,27 @@ class Cloud:
         except ValueError:
             return False
         signed = f"{msg_id}.{ts}.".encode() + body
-        want = base64.b64encode(hmac.new(self.cfg.polar_webhook_secret.encode(), signed, hashlib.sha256).digest())
+        wants = [base64.b64encode(hmac.new(k, signed, hashlib.sha256).digest()) for k in self._webhook_keys()]
         for part in sigs.split():
             version, _, sig = part.partition(",")
-            if version == "v1" and hmac.compare_digest(sig.encode(), want):
+            if version == "v1" and any(hmac.compare_digest(sig.encode(), w) for w in wants):
                 return True
         return False
+
+    def _webhook_keys(self) -> list[bytes]:
+        """Polar signs with the raw secret today; the Standard Webhooks spec derives
+        the key by base64-decoding the secret after its prefix. Accept both, so a
+        change on Polar's side does not reject every delivery."""
+        secret = self.cfg.polar_webhook_secret
+        keys = [secret.encode()]
+        tail = secret.split("_")[-1] if secret.startswith(("whsec_", "polar_whs_")) else secret
+        try:
+            decoded = base64.b64decode(tail + "=" * (-len(tail) % 4), validate=True)
+            if decoded and decoded not in keys:
+                keys.append(decoded)
+        except ValueError:
+            pass
+        return keys
 
     def _account_from(self, data: dict) -> str | None:
         customer = data.get("customer") or {}
@@ -364,13 +405,23 @@ class Cloud:
         data = event.get("data") or {}
         acct = self._account_from(data)
         if acct is None:
+            customer = data.get("customer") or {}
+            ext = customer.get("external_id") or (data.get("metadata") or {}).get("account_id")
+            if ext and self.db.query("SELECT 1 FROM deleted_accounts WHERE id = ?", (str(ext),)):
+                print(f"billing event {kind} for deleted account {ext}: check Polar")
+                return "ignored: deleted account"
             return "ignored: unknown account"
         row = self.account(acct)
         lifetime = self.cfg.products["lifetime"]
         if kind == "order.paid":
             if lifetime and self._product_id(data) == lifetime:
+                # The cap is enforced at checkout. Concurrent checkouts can still pass
+                # it; a paying customer always gets what they paid for, so only warn.
+                over = self.lifetime_left() <= 0 and row["plan"] != "lifetime"
+                if over:
+                    print(f"lifetime cap exceeded by account {acct}")
                 self.db.execute("UPDATE accounts SET plan = 'lifetime', plan_until = NULL WHERE id = ?", (acct,))
-                return "lifetime"
+                return "lifetime (over cap)" if over else "lifetime"
             return "ignored: subscription order"
         if kind == "order.refunded":
             if lifetime and self._product_id(data) == lifetime and row["plan"] == "lifetime":
@@ -384,6 +435,12 @@ class Cloud:
             cancel = 1 if data.get("cancel_at_period_end") else 0
             if row["plan"] == "lifetime":
                 return "ignored: lifetime"
+            current = row["subscription_id"]
+            if current and sub_id and sub_id != current and self.has_live_subscription(row):
+                # An older or parallel subscription: never let it change the live one.
+                if status in ("active", "trialing"):
+                    print(f"second live subscription {sub_id} for account {acct} (current {current})")
+                return "ignored: not the current subscription"
             if kind == "subscription.revoked" or status in ("revoked", "incomplete_expired"):
                 self.db.execute(
                     "UPDATE accounts SET plan = 'free', plan_until = NULL, subscription_status = ?, "
@@ -392,6 +449,9 @@ class Cloud:
                 )
                 return "free"
             if status in ("active", "trialing"):
+                if until is None:
+                    print(f"subscription {sub_id}: no period end in event, assuming one month")
+                    until = time.time() + DEFAULT_PERIOD_SECONDS
                 self.db.execute(
                     "UPDATE accounts SET plan = 'pro', plan_until = ?, subscription_id = ?, subscription_status = ?, "
                     "cancel_at_period_end = ? WHERE id = ?",
@@ -415,7 +475,7 @@ class Cloud:
         @app.get("/auth/google")
         def google_start(ext: str = ""):
             # ext is the Chrome extension's id when the extension started the sign-in.
-            ext = ext if EXTENSION_ID_RE.match(ext) else ""
+            ext = ext if ext in cfg.extension_ids else ""
             state = secrets.token_urlsafe(24)
             verifier = secrets.token_urlsafe(48)
             challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
@@ -450,7 +510,7 @@ class Cloud:
                 return fail
             acct = self.upsert_google_account(sub, email)
             ext = str(saved.get("ext") or "")
-            ext = ext if EXTENSION_ID_RE.match(ext) else ""
+            ext = ext if ext in cfg.extension_ids else ""
             token = self.create_token(acct, "Chrome extension" if ext else "Dashboard")
             resp = RedirectResponse(f"{cfg.public_url}/#connect={token}{'&ext=' + ext if ext else ''}", status_code=303)
             resp.delete_cookie("lr_oauth", path="/auth")
@@ -458,6 +518,15 @@ class Cloud:
 
         @app.delete("/api/me")
         def delete_me(p: Principal = Depends(principal)):
+            row = self.account(p.account_id or "")
+            if row is not None and row["subscription_id"] and row["plan"] == "pro" and cfg.billing_enabled:
+                # Stop billing before the account disappears.
+                status, _ = self._polar(f"/v1/subscriptions/{row['subscription_id']}", method="DELETE")
+                if status not in (200, 204, 404, 403):
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Could not cancel your subscription. Cancel it under Manage subscription, then try again.",
+                    )
             self.delete_account(p.account_id or "")
             return {"ok": True}
 
@@ -501,6 +570,8 @@ class Cloud:
             row = self.account(p.account_id or "")
             if row["plan"] == "lifetime":
                 raise HTTPException(status_code=409, detail="you already have lifetime access")
+            if body.plan != "lifetime" and self.has_live_subscription(row):
+                raise HTTPException(status_code=409, detail="You already have Pro. Change your plan under Manage subscription.")
             if body.plan == "lifetime" and self.lifetime_left() <= 0:
                 raise HTTPException(status_code=410, detail="lifetime deals are sold out")
             status, data = self._polar(
@@ -537,15 +608,17 @@ class Cloud:
             if not self.verify_webhook(request.headers, body):
                 return JSONResponse({"error": "invalid signature"}, status_code=403)
             msg_id = request.headers["webhook-id"]
-            with self.db.lock:
-                seen = self.db.conn.execute("SELECT 1 FROM webhook_events WHERE id = ?", (msg_id,)).fetchone()
-                if seen:
-                    return {"ok": True, "duplicate": True}
-                self.db.conn.execute("INSERT INTO webhook_events(id, received_at) VALUES (?, ?)", (msg_id, time.time()))
             try:
-                result = self.handle_event(json.loads(body))
-            except (ValueError, TypeError) as exc:
-                result = f"ignored: {exc}"
+                event = json.loads(body)
+            except ValueError:
+                return {"ok": True, "result": "ignored: not JSON"}
+            # One lock for check, apply and record: a delivery is applied once, and a
+            # failure (500) leaves no record, so Polar's retry applies it.
+            with self.db.lock:
+                if self.db.conn.execute("SELECT 1 FROM webhook_events WHERE id = ?", (msg_id,)).fetchone():
+                    return {"ok": True, "duplicate": True}
+                result = self.handle_event(event if isinstance(event, dict) else {})
+                self.db.conn.execute("INSERT INTO webhook_events(id, received_at) VALUES (?, ?)", (msg_id, time.time()))
             return {"ok": True, "result": result}
 
         @app.get("/api/admin/stats")

@@ -536,9 +536,13 @@ async function viewAccount(root) {
     ),
     h("div", { class: "danger-zone" },
       h("button", { class: "btn danger small", type: "button", onclick: async () => {
-        if (!confirm("Delete your account and every tracked email? This cannot be undone. Cancel any subscription first.")) return;
-        await api("/api/me", { method: "DELETE" });
-        logout();
+        if (!confirm("Delete your account and every tracked email? This cannot be undone. Any subscription is cancelled.")) return;
+        try {
+          await api("/api/me", { method: "DELETE" });
+          logout();
+        } catch (err) {
+          alert(err.message);
+        }
       } }, "Delete my account and data")),
   ].filter(Boolean));
 }

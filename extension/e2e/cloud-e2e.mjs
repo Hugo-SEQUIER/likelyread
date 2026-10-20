@@ -85,8 +85,10 @@ const polarSrv = http.createServer(async (req, res) => {
   res.writeHead(404); res.end();
 }).listen(8795, "127.0.0.1");
 
-// --- the cloud server
-const server = spawn(PY, ["-m", "uvicorn", "app:create_app", "--factory", "--port", "8782", "--log-level", "warning"], {
+// --- the cloud server (started once the extension id is known: it is allowlisted)
+let server;
+async function startCloud(extId) {
+server = spawn(PY, ["-m", "uvicorn", "app:create_app", "--factory", "--port", "8782", "--log-level", "warning"], {
   cwd: path.resolve(ROOT, "..", "server"), stdio: "inherit",
   env: {
     ...process.env, MODE: "cloud", DB_PATH: path.join(WORK, "cloud.db"), PUBLIC_URL: CLOUD,
@@ -94,9 +96,11 @@ const server = spawn(PY, ["-m", "uvicorn", "app:create_app", "--factory", "--por
     GOOGLE_AUTH_URL: `${GOOGLE}/auth`, GOOGLE_TOKEN_URL: `${GOOGLE}/token`,
     POLAR_API_URL: POLAR, POLAR_ACCESS_TOKEN: "polar_oat_e2e", POLAR_WEBHOOK_SECRET: WEBHOOK_SECRET,
     POLAR_PRODUCT_PRO_MONTHLY: "prod_m", POLAR_PRODUCT_PRO_YEARLY: "prod_y", POLAR_PRODUCT_LIFETIME: "prod_l",
+    EXTENSION_IDS: extId,
   },
 });
 for (let i = 0; i < 100; i++) { try { if ((await fetch(CLOUD + "/healthz")).ok) break; } catch {} await sleep(100); }
+}
 
 const ctx = await chromium.launchPersistentContext(path.join(WORK, "profile"), {
   executablePath: CHROME, headless: true, viewport: { width: 1280, height: 800 },
@@ -114,7 +118,7 @@ try {
   sw.on("console", (m) => { if (m.type() === "error") errors.push(`service worker: ${m.text()}`); });
   ctx.on("page", watch);
   const extId = new URL(sw.url()).host;
-  await sleep(500);
+  await startCloud(extId);
   for (const p of ctx.pages()) if (p.url().includes("options")) await p.close();
 
   // 1. the dashboard shows Google sign-in, not a token form
@@ -200,7 +204,7 @@ try {
   check("run finished", false, err.stack);
 } finally {
   await ctx.close();
-  server.kill();
+  server?.kill();
   googleSrv.close();
   polarSrv.close();
   fs.rmSync(EXT, { recursive: true, force: true });
