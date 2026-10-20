@@ -32,6 +32,8 @@ interface ComposeState {
   control: HTMLElement;
   eye: HTMLElement;
   picker: HTMLElement;
+  /** Daily pace warning, shown only when the sender is at its suggested limit. */
+  pace: HTMLElement;
   pixelId: string | null;
   /** The user changed the eye or the campaign here: config updates no longer override it. */
   touched: boolean;
@@ -77,7 +79,10 @@ export class ComposeTracker {
         if (!body.isConnected) {
           this.composes.delete(body);
           if (this.popover?.state === st) this.closePicker();
-        } else if (!st.control.isConnected) this.insertControl(st); // Gmail re-rendered the toolbar
+        } else {
+          if (!st.control.isConnected) this.insertControl(st); // Gmail re-rendered the toolbar
+          this.updatePace(st); // the From address can change while composing
+        }
       }
     });
     this.safe(() => this.scanForOwnPixels());
@@ -118,6 +123,7 @@ export class ComposeTracker {
       control,
       eye: this.doc.createElement("div"),
       picker: this.doc.createElement("div"),
+      pace: this.doc.createElement("span"),
       pixelId: existing,
       touched: false,
     };
@@ -140,8 +146,10 @@ export class ComposeTracker {
   }
 
   private buildControl(state: ComposeState): void {
-    const { control, eye, picker } = state;
+    const { control, eye, picker, pace } = state;
     control.className = CONTROL_CLASS;
+    pace.className = "lr-pace";
+    pace.hidden = true;
     eye.className = "lr-eye";
     eye.setAttribute("role", "button");
     eye.setAttribute("tabindex", "0");
@@ -149,7 +157,7 @@ export class ComposeTracker {
     picker.setAttribute("role", "button");
     picker.setAttribute("tabindex", "0");
     picker.setAttribute("aria-haspopup", "dialog");
-    control.append(eye, picker);
+    control.append(eye, picker, pace);
 
     const act = (el: HTMLElement, fn: () => void) => {
       const run = (e: Event) => {
@@ -193,6 +201,26 @@ export class ComposeTracker {
     picker.classList.toggle("is-empty", !state.campaign);
     picker.title = state.campaign ? `Campaign: ${state.campaign}. Click to change.` : "Pick a campaign for this email";
     picker.hidden = !state.enabled || !cfg.configured;
+    this.updatePace(state);
+  }
+
+  /** "20/20 today" next to the eye once the From address reaches the daily guide
+   * from Sender health. Advice only: sending is never blocked. Touches the DOM
+   * only when the text changes, so it is safe to call on every scan. */
+  private updatePace(state: ComposeState): void {
+    const cfg = this.deps.getConfig();
+    const sender = this.senderOf(state.root);
+    const pace = sender ? cfg.senderLimits?.[sender] : undefined;
+    const show = !!(state.enabled && cfg.configured && pace && pace.limit !== null && pace.sent >= pace.limit);
+    const text = show && pace ? `${pace.sent}/${pace.limit} today` : "";
+    if (state.pace.textContent !== text) state.pace.textContent = text;
+    if (state.pace.hidden === show) state.pace.hidden = !show;
+    if (show && pace && sender) {
+      const title =
+        `Likelyread: ${pace.sent} tracked emails from ${sender} in the last 24 hours. ` +
+        `The guide for this address is ${pace.limit} a day; going faster can push it into spam. You can still send.`;
+      if (state.pace.title !== title) state.pace.title = title;
+    }
   }
 
   // ---------------------------------------------------------------- campaign picker

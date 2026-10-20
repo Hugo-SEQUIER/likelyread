@@ -244,6 +244,16 @@ def cmd_stats(cfg: dict, a):
     return api(cfg, "GET", "/api/stats", query={"campaign": a.campaign, "sender": a.sender, "days": a.days, "tz": local_tz_minutes() if a.tz is None else a.tz})
 
 
+def cmd_health(cfg: dict, a):
+    """Sender health. With --from, one object: check ramp.remaining before a batch."""
+    rows = api(cfg, "GET", "/api/senders/health", query={"sender": a.sender, "dns": "false" if a.no_dns else None})
+    if a.sender:
+        if not rows:
+            raise CliError(f"no tracked email from {a.sender} yet")
+        return rows[0]
+    return rows
+
+
 def cmd_set_campaign(cfg: dict, a):
     return api(cfg, "PATCH", f"/api/emails/{urllib.parse.quote(a.id)}", {"campaign": a.campaign or None})
 
@@ -326,6 +336,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--days", type=int, default=30)
     s.add_argument("--tz", type=int, help="minutes east of UTC for daily and hourly buckets (default: this machine's)")
     s.set_defaults(fn=cmd_stats)
+
+    s = sub.add_parser("health", help="sender health: SPF/DKIM/DMARC, daily pace (ramp.remaining) and open-rate trend")
+    s.add_argument("--from", dest="sender", help="one sending address")
+    s.add_argument("--no-dns", action="store_true", help="skip the DNS checks (fast)")
+    s.set_defaults(fn=cmd_health)
 
     s = sub.add_parser("set-campaign", help="move an email to another campaign (empty for none)")
     s.add_argument("id")

@@ -22,3 +22,5 @@
 .lr-opt:hover, .lr-opt:focus-visible { background: #f2f2f2; outline: none; }
 .lr-new { box-sizing: border-box; width: 100%; height: 36px; padding: 0 10px; border: 0; border-radius: 4px; background: #f2f2f2; color: #0a0a0a; font: inherit; }
 .lr-new:focus { outline: 2px solid #d92b21; outline-offset: 0; background: #ffffff; }
+.lr-pace { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; margin-left: 4px; border-radius: 12px; background: #fce8e6; color: #a51d16; font-size: 12px; font-weight: 600; white-space: nowrap; cursor: help; }
+.lr-pace[hidden] { display: none; }

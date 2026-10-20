@@ -353,3 +353,27 @@ test("extractEmail reads Gmail's tab title", () => {
   assert.equal(extractEmail("Inbox (3) - Sam.Rivera@gmail.com - Gmail"), "sam.rivera@gmail.com");
   assert.equal(extractEmail("Gmail"), null);
 });
+
+test("pace warning appears at the sender's daily guide and never blocks sending", () => {
+  const { doc, click, registered, config, tracker, eye } = setup({ senderLimits: { [ME]: { sent: 19, limit: 20 } } });
+  const pace = () => doc.querySelector<HTMLElement>(".lr-pace")!;
+  assert.equal(pace().hidden, true, "below the guide: no warning");
+  config.senderLimits = { [ME]: { sent: 20, limit: 20 } };
+  tracker.scan();
+  assert.equal(pace().hidden, false);
+  assert.equal(pace().textContent, "20/20 today");
+  assert.match(pace().title, /You can still send/);
+  click();
+  assert.equal(registered.length, 1, "the email is still sent and tracked");
+});
+
+test("no pace warning when tracking is off or the address is established", () => {
+  const { doc, config, tracker, eye, win } = setup({ senderLimits: { [ME]: { sent: 30, limit: null } } });
+  const pace = () => doc.querySelector<HTMLElement>(".lr-pace")!;
+  assert.equal(pace().hidden, true, "established: limit null");
+  config.senderLimits = { [ME]: { sent: 30, limit: 20 } };
+  tracker.scan();
+  assert.equal(pace().hidden, false);
+  eye().dispatchEvent(new win.MouseEvent("click", { bubbles: true }));
+  assert.equal(pace().hidden, true, "tracking off: no advice");
+});

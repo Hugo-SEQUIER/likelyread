@@ -175,3 +175,14 @@ def test_setup_writes_a_private_config(tmp_path, monkeypatch, capsys):
     assert json.loads(cfg.read_text()) == {"url": "https://t.example.com", "token": tok}
     assert oct(cfg.stat().st_mode & 0o777) == "0o600"
     assert tok not in capsys.readouterr().out, "the token is never printed"
+
+
+def test_health_pace_for_an_agent_batch(server):
+    for _ in range(2):
+        run(server, "track", "--subject", "Batch", "--to", "x@y.com", "--from", "pace@example.com")
+    code, h, _ = run(server, "health", "--from", "pace@example.com", "--no-dns")
+    assert code == 0 and h["sender"] == "pace@example.com"
+    assert (h["ramp"]["sent_24h"], h["ramp"]["limit"], h["ramp"]["remaining"]) == (2, 20, 18)
+    assert h["dns"] is None
+    code, _, err = run(server, "health", "--from", "nobody@example.com", "--no-dns")
+    assert code == 1 and "no tracked email" in err

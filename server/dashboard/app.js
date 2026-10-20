@@ -256,7 +256,7 @@ async function viewOverviewFree(root) {
       h("p", {}, `In the last ${state.me.features.history_days} days. Every open is listed with its time and how it was loaded.`),
     ),
     h("section", { class: "split" },
-      upsell("charts", "See what works", ["Open rate per campaign and per sending address", "30-day timeline and busiest hours", "Median time to first open", "Your full history, not only 30 days"]),
+      upsell("charts", "See what works", ["Open rate per campaign and per sending address", "Sender health: setup checks, a safe daily pace, spam-folder alerts", "30-day timeline and busiest hours", "Your full history, not only 30 days"]),
       h("div", {},
         sectionHead("Recent opens"),
         recent.length
@@ -512,7 +512,7 @@ async function viewAccount(root) {
     ),
     !isPro && me.billing
       ? h("section", {},
-          sectionHead("Upgrade to Pro", h("span", { class: "muted" }, "Campaign analytics, charts, filters and full history")),
+          sectionHead("Upgrade to Pro", h("span", { class: "muted" }, "Campaign analytics, sender health, charts, filters and full history")),
           h("div", { class: "plans" },
             plan("pro_yearly", "Yearly", p.pro_yearly || "$36", " / year", "Three months free compared with monthly.", true),
             plan("pro_monthly", "Monthly", p.pro_monthly || "$5", " / month", "Cancel any time."),
@@ -568,6 +568,83 @@ async function adminPanel() {
       tile(a.emails_24h, "Emails in 24 h", `${a.hits_24h} hits`)));
 }
 
+// ---------------------------------------------------------------- sender health
+
+const healthLabel = { ok: "Healthy", warn: "Check", bad: "Fix now", unknown: "Unknown", fail: "Missing" };
+
+async function viewSenders(root) {
+  if (!can("senders")) {
+    root.append(
+      h("section", { class: "headline" },
+        h("h1", {}, "Sender health", h("br"), h("span", { class: "rate" }, "on Pro")),
+        h("p", {}, "Keep every address you send from out of spam, without fake engagement.")),
+      upsell("senders", "Stay out of spam", [
+        "SPF, DKIM and DMARC checked for each sending domain, with the exact fix",
+        "A daily volume guide for new addresses, with a warning in Gmail before you go over",
+        "An alert when an address's open rate drops: the first sign of the spam folder",
+      ]));
+    return;
+  }
+  const { data } = await api("/api/senders/health");
+  root.append(
+    h("section", { class: "headline" },
+      h("h1", {}, "Sender", h("br"), h("span", { class: "rate" }, "health")),
+      h("p", {}, "For each address you send from: is it set up so inboxes trust it, are you sending at a safe pace, and are people still opening? Real signals only: nothing here sends email for you.")),
+  );
+  if (!data.length) {
+    root.append(h("p", { class: "empty" }, "No sending addresses yet. They appear after your first tracked email."));
+    return;
+  }
+  for (const r of data) root.append(senderCard(r));
+}
+
+function senderCard(r) {
+  const check = (c) => h("li", { class: `check ${c.status}` },
+    h("span", { class: "check-label" }, c.label),
+    h("span", { class: "check-status" }, healthLabel[c.status] || c.status),
+    h("div", { class: "check-body" }, h("p", {}, c.detail), c.fix ? h("p", { class: "check-fix" }, c.fix) : null));
+  const ramp = r.ramp;
+  const pct2 = (x) => (x === null || x === undefined ? "n/a" : `${Math.round(x * 100)}%`);
+  const toggle = h("input", { type: "checkbox", checked: r.established, "aria-label": "Established address" });
+  toggle.addEventListener("change", async () => {
+    toggle.disabled = true;
+    try {
+      await api(`/api/senders/health/${encodeURIComponent(r.sender)}`, { method: "PUT", body: JSON.stringify({ established: toggle.checked }) });
+      await render();
+    } catch (err) {
+      alert(err.message);
+      toggle.disabled = false;
+    }
+  });
+  const rampText = ramp.phase === "established"
+    ? "No daily guide: marked as an established address."
+    : `${ramp.sent_24h} of ${ramp.limit} in the last 24 hours (day ${ramp.day} of tracked sending${ramp.phase === "ramping" ? ", ramping up" : ""}).`;
+  return h("section", { class: `sender-card ${r.status}` },
+    h("div", { class: "sender-head" },
+      h("h2", {}, r.sender),
+      h("span", { class: `chip health ${r.status}` }, healthLabel[r.status])),
+    r.issues.length ? h("ul", { class: "issues" }, r.issues.map((i) => h("li", {}, i))) : h("p", { class: "muted" }, "Nothing to fix."),
+    h("div", { class: "sender-grid" },
+      h("div", {},
+        h("h3", {}, "Setup"),
+        r.dns ? h("ul", { class: "checks" }, r.dns.checks.map(check)) : h("p", { class: "muted" }, "Not checked.")),
+      h("div", {},
+        h("h3", {}, "Pace"),
+        h("p", {}, rampText),
+        ramp.limit ? h("div", { class: "rate-bar wide" }, h("div", { class: "rate-fill", style: { width: `${Math.min(100, (ramp.sent_24h / ramp.limit) * 100)}%` } })) : null,
+        h("label", { class: "check-inline" }, toggle, " Established address (it already sends every day): skip the guide"),
+        h("h3", {}, "Opens"),
+        h("p", {}, r.trend.recent.emails
+          ? `Last 7 days: ${pct2(r.trend.recent.open_rate)} of ${r.trend.recent.emails} emails opened.`
+          : "No emails in the last 7 days yet.",
+          " ",
+          r.trend.before.emails
+            ? `The 4 weeks before: ${pct2(r.trend.before.open_rate)} of ${r.trend.before.emails}.`
+            : "No earlier emails to compare with yet."),
+        h("p", { class: "muted small" }, "Emails from the last 24 hours are left out: they have not had time to be opened."))),
+  );
+}
+
 function emptyState() {
   return h("section", { class: "headline" },
     h("h1", {}, "Nothing tracked", h("br"), h("span", { class: "rate" }, "yet")),
@@ -592,6 +669,7 @@ async function render() {
     const frag = h("div", {});
     if (section === "connect") viewConnect(frag);
     else if (section === "account" && isCloud()) await viewAccount(frag);
+    else if (section === "senders") await viewSenders(frag);
     else if (section === "extension-connected") viewExtensionConnected(frag);
     else if (section === "campaigns") await viewCampaigns(frag);
     else if (section === "emails") await viewEmails(frag, params);

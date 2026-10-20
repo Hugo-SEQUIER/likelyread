@@ -17,6 +17,7 @@ Self-hosting stays free with every feature.
 | Agent CLI and API | Yes | Yes | Yes |
 | History | 30 days | Unlimited | Unlimited |
 | Campaign analytics, charts, filters by campaign and sender | No | Yes | Yes |
+| Sender health: SPF/DKIM/DMARC checks, daily pace guide, open-rate drop alerts | No | Yes | Yes |
 
 ### Why these prices
 

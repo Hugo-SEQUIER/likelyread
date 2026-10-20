@@ -34,6 +34,9 @@ export interface ContentConfig {
   /** Per signed-in account, the addresses it sent from. Background fills this; the
    * content script picks its own account's list into `senders`. */
   sendersByAccount?: Record<string, string[]>;
+  /** Sender health pace per lower-cased address: tracked emails in the last 24 h
+   * and the suggested daily limit (null when the address is marked established). */
+  senderLimits?: Record<string, { sent: number; limit: number | null }>;
 }
 
 export type Message =

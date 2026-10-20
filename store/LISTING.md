@@ -32,6 +32,7 @@ What you get:
 - The address you sent from, including send-as aliases
 - A toolbar popup with every tracked email and its status
 - A dashboard: every hit with its reason, and on Pro, open rates per campaign, time to first open and busiest hours
+- Sender health on Pro: checks that each address you send from is set up so inboxes trust it, suggests a safe daily pace for new addresses, and warns when opens drop
 - A command-line tool and an agent skill, so scripts and AI agents can track the emails they send
 
 Two ways to use it:

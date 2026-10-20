@@ -88,6 +88,7 @@ The dashboard (`https://your-domain/`) has:
 - **Overview:** tracked emails, open rate, total opens, opens in the last 7 days, median time to first open, a 30-day sent vs opens chart, opens by hour of day (useful to pick a send time), and the latest opens.
 - **Campaigns:** open rate, opens and time to first open per campaign, side by side.
 - **Emails:** search by subject, recipient or campaign, filter by status, and open any email to see every hit with its time, verdict, the reason for that verdict, user agent and IP.
+- **Senders:** sender health for every address you send from (see below).
 - **From address:** each email records the address it was sent from (your account or a send-as alias). When you use more than one, the dashboard shows a From column and an address filter.
 
 Open rate means *emails with at least one open / tracked emails*. Apple prefetches and your own views are never counted.
@@ -95,6 +96,16 @@ Open rate means *emails with at least one open / tracked emails*. Apple prefetch
 ![Email detail](docs/screenshots/email-detail.png)
 
 ![Campaign picker in Gmail compose](docs/screenshots/compose-picker.png)
+
+### Sender health
+
+For each address you send from, the **Senders** tab shows three things:
+
+- **Setup:** SPF, DKIM and DMARC on the address's domain, each with the exact fix when something is missing. Gmail and Yahoo require SPF or DKIM from every sender, and DMARC from bulk senders. Addresses at big providers such as gmail.com need nothing.
+- **Pace:** for an address new to sending, a daily guide: 20 emails on the first day, 5 more each day, up to 50. When you reach it, Gmail's compose window shows `20/20 today` next to the eye. It is advice only: sending is never blocked. Tick *Established address* for an address that already sends every day.
+- **Opens:** the open rate of the last 7 days against the 4 weeks before. A sharp drop, or no opens at all, is the first sign that mail has started landing in spam.
+
+Nothing here sends email or fakes engagement. It reads DNS and your own tracking data. Agents get the same data with `likelyread health --from you@example.com`.
 
 The dashboard is a static page with no data of its own: it reads the authenticated API with your token. Set `DASHBOARD=false` to turn it off.
 

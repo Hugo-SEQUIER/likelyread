@@ -128,6 +128,12 @@ CREATE TABLE IF NOT EXISTS suppressions (
   ts          REAL,
   account_id  TEXT
 );
+CREATE TABLE IF NOT EXISTS sender_settings (
+  acct         TEXT NOT NULL,     -- account id, '' in self-host mode
+  sender       TEXT NOT NULL,     -- lower-cased address
+  established  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (acct, sender)
+);
 CREATE INDEX IF NOT EXISTS idx_hits_email ON hits(email_id);
 CREATE INDEX IF NOT EXISTS idx_hits_ts ON hits(ts);
 CREATE INDEX IF NOT EXISTS idx_supp_email ON suppressions(email_id);
@@ -509,6 +515,10 @@ class EmailPatch(BaseModel):
         return _clean_campaign(v)
 
 
+class SenderSettingsIn(BaseModel):
+    established: bool
+
+
 class CampaignRename(BaseModel):
     name: str | None = Field(default=None, max_length=200)
 
@@ -601,6 +611,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     # Gmail proxy hits are keyed per (proxy ip, email) and live in their own table,
     # so a burst of them can never fill the table that direct hits rely on.
     proxy_limiter = RateLimiter(cfg.pixel_rate_per_min)
+    import health
+
+    dns_cache = health.DnsCache()
     cloud = None
     if cfg.mode == "cloud":
         import cloud as cloud_mod  # only loaded in cloud mode
@@ -629,6 +642,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     app.state.limiter = limiter
     app.state.proxy_limiter = proxy_limiter
     app.state.cloud = cloud
+    app.state.dns_cache = dns_cache
 
     if cfg.allowed_origins:
         app.add_middleware(
@@ -861,6 +875,63 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             (p.account_id,),
         )
         return [{"sender": r["s"], "emails": r["n"], "last_sent": r["last"]} for r in rows]
+
+    # ---- sender health (Pro in the cloud) ---------------------------------
+
+    @app.get("/api/senders/health")
+    def senders_health(
+        p: Principal = Depends(principal),
+        sender: str | None = Query(None, max_length=320),
+        dns: bool = Query(True, description="false skips the DNS checks (fast, for the extension)"),
+    ):
+        need(p, "senders")
+        now = time.time()
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for s, _ in store.summaries(p.account_id, since=now - 35 * 86400):
+            addr = (s["sender"] or "").lower()
+            if addr and "@" in addr and (not sender or addr == sender.strip().lower()):
+                groups[addr].append(s)
+        acct_key = p.account_id or ""
+        # The ramp starts at the first tracked email ever, not only the last 35 days.
+        firsts = {
+            r["s"]: r["first"]
+            for r in db.query(
+                "SELECT lower(sender) AS s, MIN(sent_at) AS first FROM emails WHERE account_id IS ? "
+                "AND sender IS NOT NULL GROUP BY lower(sender)",
+                (p.account_id,),
+            )
+        }
+        if sender and not groups and sender.strip().lower() in firsts:
+            groups[sender.strip().lower()] = []
+        established = {
+            r["sender"]
+            for r in db.query("SELECT sender FROM sender_settings WHERE acct = ? AND established = 1", (acct_key,))
+        }
+        dns_results = dns_cache.many([a.split("@", 1)[1] for a in groups]) if dns else {}
+        out = []
+        for addr, emails in groups.items():
+            rep_ = health.report(addr, emails, dns_results.get(addr.split("@", 1)[1]), addr in established, now)
+            first = firsts.get(addr)
+            if first is not None and not rep_["established"]:
+                rep_["ramp"] = health.ramp(first, rep_["ramp"]["sent_24h"], False, now)
+                rep_["first_sent"] = first
+            out.append(rep_)
+        order = {"bad": 0, "warn": 1, "ok": 2}
+        out.sort(key=lambda r: (order[r["status"]], -r["emails"]))
+        return out
+
+    @app.put("/api/senders/health/{sender}")
+    def set_sender(sender: str, body: SenderSettingsIn, p: Principal = Depends(principal)):
+        need(p, "senders")
+        addr = sender.strip().lower()
+        if "@" not in addr or len(addr) > 320:
+            raise HTTPException(status_code=422, detail="not an email address")
+        db.execute(
+            "INSERT INTO sender_settings(acct, sender, established) VALUES (?, ?, ?) "
+            "ON CONFLICT(acct, sender) DO UPDATE SET established = excluded.established",
+            (p.account_id or "", addr, 1 if body.established else 0),
+        )
+        return {"ok": True, "sender": addr, "established": body.established}
 
     @app.patch("/api/campaigns/{name}")
     def rename_campaign(name: str, body: CampaignRename, p: Principal = Depends(principal)):

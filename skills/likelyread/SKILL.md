@@ -68,6 +68,18 @@ likelyread track --id ID --subject "Proposal" --to maya@example.com \
 - `--to` accepts display names (`Maya H <maya@example.com>`); only the addresses are kept. `--id` must be the UUID printed by `likelyread pixel`.
 - `likelyread html` escapes the text, keeps paragraphs and line breaks, and turns bare URLs into real links. Check that the HTML part shows the same words as the text part.
 
+## Pace before a batch
+
+Check the sender's health before sending a batch, and never send more than `ramp.remaining`:
+
+```bash
+likelyread health --from me@example.com --no-dns   # ramp: {sent_24h, limit, remaining}; status ok|warn|bad; issues
+likelyread health --from me@example.com            # also checks SPF, DKIM and DMARC (slower)
+```
+
+- `ramp.remaining` is how many more emails the address should send in the next 24 hours. `null` means the address is marked established: no guide.
+- If `status` is `bad`, or an issue mentions an open-rate drop, stop the batch and tell the human. Do not work around it by switching addresses.
+
 ## Reading results
 
 ```bash

@@ -9,6 +9,8 @@ const QUEUE_KEY = "queue";
 const SENDERS_KEY = "sendersByAccount";
 const CAMPAIGN_CACHE_KEY = "campaignCache";
 const CAMPAIGN_CACHE_MS = 60_000;
+const PACE_CACHE_KEY = "paceCache";
+const PACE_CACHE_MS = 120_000;
 const FLUSH_ALARM = "likelyread-flush";
 
 async function getQueue(): Promise<QueueItem[]> {
@@ -131,6 +133,28 @@ async function fetchCampaignNames(settings: Awaited<ReturnType<typeof getSetting
   }
 }
 
+/** Sender health pace for the compose warning. Pro / self-host only: other plans
+ * (402) and older servers (404) just get no warning. */
+async function senderLimits(): Promise<ContentConfig["senderLimits"]> {
+  const settings = await getSettings();
+  if (!settings.serverUrl || !settings.token) return {};
+  const { [PACE_CACHE_KEY]: cache } = await chrome.storage.local.get(PACE_CACHE_KEY);
+  const c = cache as { at: number; limits: ContentConfig["senderLimits"] } | undefined;
+  if (c && Date.now() - c.at < PACE_CACHE_MS) return c.limits;
+  let limits: ContentConfig["senderLimits"] = {};
+  try {
+    const rows = await apiFetch<{ sender: string; ramp: { sent_24h: number; limit: number | null } }[]>(
+      settings,
+      "/api/senders/health?dns=false",
+    );
+    limits = Object.fromEntries(rows.map((r) => [r.sender.toLowerCase(), { sent: r.ramp.sent_24h, limit: r.ramp.limit }]));
+  } catch {
+    limits = c?.limits ?? {};
+  }
+  await chrome.storage.local.set({ [PACE_CACHE_KEY]: { at: Date.now(), limits } });
+  return limits;
+}
+
 async function contentConfig(): Promise<ContentConfig> {
   const s = await getSettings();
   return {
@@ -141,6 +165,7 @@ async function contentConfig(): Promise<ContentConfig> {
     campaigns: await campaignNames(),
     senders: [],
     sendersByAccount: await sendersByAccount(),
+    senderLimits: await senderLimits(),
   };
 }
 
@@ -166,7 +191,7 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse) => {
     enqueue({ email, attempts: 0, nextAt: 0 })
       .then(() => rememberSender(msg.account?.toLowerCase(), email.sender))
       .then(flush)
-      .then(() => chrome.storage.local.remove(CAMPAIGN_CACHE_KEY))
+      .then(() => chrome.storage.local.remove([CAMPAIGN_CACHE_KEY, PACE_CACHE_KEY]))
       .then(() => sendResponse({ ok: true }));
     return true;
   }
@@ -202,7 +227,7 @@ chrome.alarms.onAlarm.addListener((a) => {
 // token-free ContentConfig, by message.
 void chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => undefined);
 
-const CONTENT_KEYS = ["serverUrl", "token", "trackByDefault", "campaign", SENDERS_KEY, CAMPAIGN_CACHE_KEY];
+const CONTENT_KEYS = ["serverUrl", "token", "trackByDefault", "campaign", SENDERS_KEY, CAMPAIGN_CACHE_KEY, PACE_CACHE_KEY];
 
 async function notifyGmailTabs(): Promise<void> {
   const tabs = await chrome.tabs.query({ url: "https://mail.google.com/*" });
@@ -216,7 +241,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (CONTENT_KEYS.some((k) => k in changes)) void notifyGmailTabs().catch(() => undefined);
   if (changes.serverUrl) void syncBlockRules();
   if (changes.serverUrl || changes.token) {
-    void chrome.storage.local.remove(CAMPAIGN_CACHE_KEY);
+    void chrome.storage.local.remove([CAMPAIGN_CACHE_KEY, PACE_CACHE_KEY]);
     void flush();
   }
 });

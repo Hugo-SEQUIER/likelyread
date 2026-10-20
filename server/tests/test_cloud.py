@@ -311,7 +311,7 @@ def test_free_plan_tracks_but_locks_insights(client, fake, clock):
     assert r.status_code == 200
     assert client.get("/api/emails", headers=H(a)).json()[0]["campaign"] == "Launch"
     assert client.get("/api/campaign-names", headers=H(a)).json() == ["Launch"]
-    for path in ("/api/campaigns", "/api/stats", "/api/senders", "/api/emails?campaign=Launch"):
+    for path in ("/api/campaigns", "/api/stats", "/api/senders", "/api/senders/health", "/api/emails?campaign=Launch"):
         r = client.get(path, headers=H(a))
         assert r.status_code == 402, path
         assert r.json()["detail"]["error"] == "pro_required"
