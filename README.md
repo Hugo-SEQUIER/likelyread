@@ -41,11 +41,11 @@ Treat it like a password. You can print it again any time with `sudo bash /opt/l
 
 **3. Connect the extension.** Install the Chrome extension, open its settings, paste the setup link and click **Save**. Write an email in Gmail: the red eye next to Send means it is tracked.
 
-Until the extension is on the Chrome Web Store, build and load it yourself: `cd extension && npm install && npm run build`, then in `chrome://extensions` turn on **Developer mode**, click **Load unpacked** and pick `extension/dist`.
+Until the extension is on the Chrome Web Store (submission kit: [`store/LISTING.md`](store/LISTING.md)), build and load it yourself: `cd extension && npm install && npm run build`, then in `chrome://extensions` turn on **Developer mode**, click **Load unpacked** and pick `extension/dist`.
 
 **4. Open the dashboard.** Open the setup link in your browser: it signs you in.
 
-Non-interactive install, for example from a provisioning script: `sudo bash install.sh --domain t.yourcompany.com --yes`. See `install.sh --help` for all options.
+Non-interactive install, for example from a provisioning script: `sudo bash install.sh --domain t.yourcompany.com --yes`. If something else on the server already uses port 443 on another address, add `--bind-ip <public IP>`. See `install.sh --help` for all options.
 
 <details>
 <summary>Manual setup without the installer</summary>

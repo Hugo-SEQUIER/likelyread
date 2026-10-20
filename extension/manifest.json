@@ -1,25 +1,54 @@
 {
   "manifest_version": 3,
-  "name": "Likelyread",
-  "version": "0.2.3",
-  "description": "Self-hosted email open tracking for Gmail. Your data stays on your own server.",
-  "permissions": ["storage", "declarativeNetRequest", "alarms"],
-  "host_permissions": ["https://mail.google.com/*"],
-  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
-  "background": { "service_worker": "background.js" },
+  "name": "Likelyread: email open tracking for Gmail™",
+  "short_name": "Likelyread",
+  "version": "0.3.0",
+  "description": "See when the emails you send from Gmail™ are opened. Self-hosted: your data stays on your own server, never with us.",
+  "homepage_url": "https://likelyread.com",
+  "permissions": [
+    "storage",
+    "declarativeNetRequest",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://mail.google.com/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle"
     }
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_icon": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png" }
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png"
+    }
   },
   "options_page": "options.html",
-  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
   "minimum_chrome_version": "111"
 }

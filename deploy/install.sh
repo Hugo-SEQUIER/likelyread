@@ -13,6 +13,7 @@
 #   --dir /opt/likelyread    install directory
 #   --source PATH|URL        local checkout or tarball URL instead of GitHub main
 #   --http-port 80 --https-port 443
+#   --bind-ip IP             listen on this IP only
 #   --yes                    do not ask questions (needs --domain or --no-domain)
 #   --show-link              print the setup link of an existing install and exit
 set -euo pipefail
@@ -24,6 +25,7 @@ NO_DOMAIN=0
 SOURCE=""
 HTTP_PORT=""
 HTTPS_PORT=""
+BIND_IP=""
 YES=0
 SHOW_LINK=0
 
@@ -40,6 +42,7 @@ while [ $# -gt 0 ]; do
     --source) SOURCE="${2:-}"; shift 2 ;;
     --http-port) HTTP_PORT="${2:-}"; shift 2 ;;
     --https-port) HTTPS_PORT="${2:-}"; shift 2 ;;
+    --bind-ip) BIND_IP="${2:-}"; shift 2 ;;
     --yes|-y) YES=1; shift ;;
     --show-link) SHOW_LINK=1; shift ;;
     -h|--help)
@@ -50,6 +53,7 @@ Likelyread installer. Usage: install.sh [options]
   --dir /opt/likelyread    install directory
   --source PATH|URL        local checkout or tarball URL instead of GitHub main
   --http-port 80 --https-port 443
+  --bind-ip 203.0.113.10   listen on this IP only (when other software uses 443 elsewhere)
   --yes                    do not ask questions
   --show-link              print the setup link of an existing install and exit
 Run it again to update: the address, token and data are kept.
@@ -130,6 +134,7 @@ if [ "$UPDATE" -eq 1 ]; then
   [ -z "$DOMAIN" ] && [ "$NO_DOMAIN" -eq 0 ] && DOMAIN="$(env_get DOMAIN)"
   [ -z "$HTTP_PORT" ] && HTTP_PORT="$(env_get HTTP_PORT)"
   [ -z "$HTTPS_PORT" ] && HTTPS_PORT="$(env_get HTTPS_PORT)"
+  [ -z "$BIND_IP" ] && BIND_IP="$(env_get BIND_IP)"
 fi
 HTTP_PORT="${HTTP_PORT:-80}"
 HTTPS_PORT="${HTTPS_PORT:-443}"
@@ -164,7 +169,8 @@ if [ "$DOMAIN" != localhost ] && [ -n "$PUBLIC_IP" ]; then
   fi
 fi
 for p in "$HTTP_PORT" "$HTTPS_PORT"; do
-  if command -v ss >/dev/null && ss -ltnH "( sport = :$p )" 2>/dev/null | grep -q .; then
+  if command -v ss >/dev/null && ss -ltnH "( sport = :$p )" 2>/dev/null | awk '{print $4}' \
+       | grep -Eq "^(\*|0\.0\.0\.0|\[::\]|${BIND_IP:-[^ ]+}):$p\$"; then
     if ! docker ps --format '{{.Ports}}' | grep -q ":$p->"; then
       warn "Port $p is already used by another program. HTTPS needs ports 80 and 443 free."
       confirm "Continue anyway?" || exit 1
@@ -186,10 +192,16 @@ fi
 set_env() { # set_env KEY VALUE
   if grep -q "^$1=" "$ENV_FILE"; then sed -i "s#^$1=.*#$1=$2#" "$ENV_FILE"; else printf '%s=%s\n' "$1" "$2" >>"$ENV_FILE"; fi
 }
+# One compose project per install directory, so two installs on one machine never
+# replace each other's containers (/opt/likelyread -> "likelyread").
+PROJECT="$(basename "$DIR" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9-\n' '-' | sed 's/^-*//; s/-*$//')"
+[ -n "$PROJECT" ] || PROJECT=likelyread
+set_env COMPOSE_PROJECT_NAME "$PROJECT"
 set_env DOMAIN "$DOMAIN"
 set_env LIKELYREAD_TOKEN "$TOKEN"
 set_env HTTP_PORT "$HTTP_PORT"
 set_env HTTPS_PORT "$HTTPS_PORT"
+[ -n "$BIND_IP" ] && set_env BIND_IP "$BIND_IP"
 chmod 600 "$ENV_FILE"
 mkdir -p "$DIR/deploy/data"
 say "Saved $ENV_FILE (readable by root only)."

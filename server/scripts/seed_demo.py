@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-GMAIL = "Mozilla/5.0 (Windows NT 5.1; rv:11.0) Gecko Firefox/11.0 (via ggpht.com GoogleImageProxy)"
+GMAIL = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.246 Mozilla/5.0"
 APPLE = "Mozilla/5.0"
 OUTLOOK = "Mozilla/4.0 (compatible; ms-office; MSOffice 16)"
 
@@ -40,10 +40,10 @@ def main(path: str) -> None:
             subject = rnd.choice(subjects).format(co=co, n=rnd.randint(100, 999))
             rcpt = [f"{rnd.choice(['ceo', 'hello', 'jane', 'tom'])}@{co.lower()}.com"]
             db.execute(
-                "INSERT INTO emails(id, subject, recipients, sent_at, campaign) VALUES (?,?,?,?,?)",
-                (eid, subject, json.dumps(rcpt), sent, campaign),
+                "INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender) VALUES (?,?,?,?,?,?)",
+                (eid, subject, json.dumps(rcpt), sent, campaign, rnd.choice(["sam@northwind.co", "sam@northwind.co", "sales@northwind.co"])),
             )
-            db.execute("INSERT INTO hits(email_id, ts, ip, ua) VALUES (?,?,?,?)", (eid, sent + 3, "10.0.0.1", GMAIL))
+            db.execute("INSERT INTO hits(email_id, ts, ip, ua) VALUES (?,?,?,?)", (eid, sent + 3, "203.0.113.7", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"))
             if rnd.random() < 0.15:
                 db.execute("INSERT INTO hits(email_id, ts, ip, ua) VALUES (?,?,?,?)", (eid, sent + 40, "17.58.0.1", APPLE))
             if rnd.random() < rate:
@@ -51,7 +51,8 @@ def main(path: str) -> None:
                 for _ in range(rnd.choice([1, 1, 1, 2, 3])):
                     if t < now:
                         ua = rnd.choice([GMAIL, GMAIL, OUTLOOK])
-                        db.execute("INSERT INTO hits(email_id, ts, ip, ua) VALUES (?,?,?,?)", (eid, t, "66.249.84.1", ua))
+                        ip = "66.249.84.%d" % rnd.randint(2, 250) if ua == GMAIL else "203.0.113.%d" % rnd.randint(2, 250)
+                        db.execute("INSERT INTO hits(email_id, ts, ip, ua) VALUES (?,?,?,?)", (eid, t, ip, ua))
                     t += rnd.expovariate(1 / 86400)
     print(f"seeded {path}")
 

@@ -12,7 +12,8 @@ a { color: var(--ink); }
 .campaign input { width: 100%; height: 36px; padding: 0 10px; border: 0; background: #fff; font: inherit; color: var(--ink); }
 .campaign input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
 .hint { margin-top: 6px; font-size: 13px; color: var(--muted); }
-main { max-height: 440px; overflow-y: auto; padding: 0 16px 16px; display: grid; gap: 4px; }
+main { max-height: 440px; overflow-y: auto; overflow-x: hidden; padding: 0 16px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+.item, .top, .hits, .hit { min-width: 0; }
 .item { padding: 10px 12px; background: var(--surface); cursor: pointer; transition: background-color 150ms ease; }
 .item:nth-child(even) { background: #f7f7f7; }
 .item:hover { background: var(--surface-2); }
@@ -29,6 +30,6 @@ main { max-height: 440px; overflow-y: auto; padding: 0 16px 16px; display: grid;
 .hit .kind { font-weight: 600; }
 .hit.open .kind { color: var(--accent-deep); }
 .hit.self, .hit.prefetch { color: var(--muted); }
-.hit .why { grid-column: 1 / -1; font-size: 13px; }
+.hit .why { grid-column: 1 / -1; font-size: 13px; overflow-wrap: anywhere; }
 .note { color: var(--muted); padding: 12px 0; }
 .error { color: var(--accent-deep); padding: 12px 0; }
