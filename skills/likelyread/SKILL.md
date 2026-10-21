@@ -62,10 +62,10 @@ Ask the user for the setup link; never invent one. On the server itself, add `--
 
 `likelyread ping` shows the plan as `server.plan`: `free`, `pro` or `selfhost`. Pro and self-hosted servers have every command. On Free:
 
-- `ls` covers the last 30 days. `ls --campaign`, `ls --from`, `campaigns`, `stats`, `health`, and `show` or `set-campaign` on an older email answer 402 `pro_required`; the MCP tools say so in a sentence. Tracking and per-email results still work: tell the user the rest needs Likelyread Pro.
+- `ls` covers the last 30 days. `ls --campaign`, `ls --from`, `campaigns`, `stats`, `health`, and `show` or `set-campaign` on an older email answer 402 `pro_required`; the MCP tools answer `pro_required:` and a sentence to pass on. Tracking and per-email results still work: tell the user the rest needs Likelyread Pro.
 - There is no pace guide: before a batch, ask the user how many emails to send today.
 
-Free tracks 500 emails in 24 hours, Pro 5,000. Past that, `track` answers 429 `daily_limit` (`track_email` reports the daily limit): stop the batch and tell the user. An email already sent with its pixel still records opens; rerun its `track` command once the limit frees up (it accepts sends up to 30 days old).
+Free tracks 500 emails in 24 hours, Pro 5,000. Past that, `track` answers 429 `daily_limit` (`track_email` answers `daily_limit:`): stop the batch and tell the user. An email already sent with its pixel still records opens; rerun its `track` command once the limit frees up (it accepts sends up to 30 days old).
 
 ## Before tracking real email
 

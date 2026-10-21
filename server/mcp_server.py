@@ -36,11 +36,11 @@ from app import MAX_AGE_SECONDS, UUID4_RE, Api, EmailIn, Principal
 INSTRUCTIONS = """\
 Likelyread tracks whether emails you send get opened. A 1x1 image (the pixel) goes at the end of an email's HTML part. When the recipient's mail app loads it, the server records a hit and classifies it as an open, a self-view or an Apple prefetch.
 
-Before tracking: ask the user, once per campaign. Adding the pixel changes the email, so never add it to a draft the user approved word for word. Tracking opens needs the recipient's prior consent (CNIL, 2026, B2B included): unless the user decides otherwise, do not track EU recipients. Emails the user sends by hand from Gmail are tracked by the Likelyread Chrome extension, not by you.
+Before tracking: ask the user, once per campaign. Adding the pixel changes the email, so never add it to a draft the user approved word for word. In the EU, tracking opens needs the recipient's prior consent (CNIL, 2026, B2B included): unless the user decides otherwise, do not track EU recipients. Emails the user sends by hand from Gmail are tracked by the Likelyread Chrome extension, not by you.
 
 Sending: send one email per recipient when the user wants to know who opened; recipients of one email share its pixel. Put the img from new_pixel at the end of the HTML part. Plain-text emails cannot carry it: send multipart/alternative with the text unchanged and the HTML from text_to_html. Once the send is confirmed, call track_email with the pixel id, subject, recipients, sender, campaign and sent_at. Loading the pixel before sent_at counts as a draft preview, never as an open. Reuse campaign names exactly: campaign_names lists them.
 
-Pace: before a batch, call sender_health for the sending address and never send more than ramp.remaining. If its status is bad or an issue reports an open-rate drop, stop and tell the user; do not switch addresses to get around it. On Likelyread Cloud's Free plan, sender_health, list_campaigns, get_stats and the campaign and sender filters need Pro: say so, and ask the user how many emails to send today. When track_email reports the daily limit, stop the batch and tell the user; register the emails already sent later (track_email accepts sends up to 30 days old).
+Pace: before a batch, call sender_health for the sending address and never send more than ramp.remaining. If its status is bad or an issue reports an open-rate drop, stop and tell the user; do not switch addresses to get around it. On Likelyread Cloud's Free plan, sender_health, list_campaigns, get_stats and the campaign and sender filters need Pro: say so, and ask the user how many emails to send today. When track_email reports daily_limit, stop the batch and tell the user; register the emails already sent later (track_email accepts sends up to 30 days old).
 
 Results: say "opened", never "read". Gmail caches images, so repeat opens may not show. Apple Mail Privacy Protection loads images on delivery (prefetch, not an open). A missing open does not prove the email was ignored. Use opens to time a follow-up, and never mention tracking or opens to the recipient.
 
@@ -146,12 +146,12 @@ def readable(exc: HTTPException) -> str:
     if exc.status_code == 402:
         what = PRO_FEATURES.get(str(detail.get("feature")), "a Pro feature")
         return (
-            f"This needs Likelyread Pro ({what}), and this account is on the Free plan. Tell the user. "
+            f"pro_required: this needs Likelyread Pro ({what}), and this account is on the Free plan. Tell the user. "
             "Tracking and per-email results of the last 30 days work on Free."
         )
     if exc.status_code == 429:
         return (
-            f"Daily limit reached: this plan tracks {detail.get('limit')} emails in 24 hours. Stop the batch and tell "
+            f"daily_limit: this plan tracks {detail.get('limit')} emails in 24 hours. Stop the batch and tell "
             "the user. Emails already sent with their pixel still record opens: register them with track_email "
             "once the limit frees up (it accepts sends up to 30 days old)."
         )
@@ -253,6 +253,7 @@ def create(api: Api, base: str) -> AgentMcp:
         me = call(api.me, caller(ctx))
         usage = me.get("usage") or {}
         return {
+            "mode": me["mode"],
             "plan": me["plan"],
             "email": me["email"],
             "tracked_today": usage.get("today"),

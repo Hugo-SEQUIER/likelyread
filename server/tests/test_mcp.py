@@ -275,7 +275,7 @@ def test_track_email_explains_bad_input(selfhost, clock):
 def test_account_and_sender_health_selfhost(selfhost):
     m = Mcp(selfhost, TOKEN)
     acct = m.call("account")
-    assert acct == {"plan": "selfhost", "email": None, "tracked_today": 0, "daily_limit": None,
+    assert acct == {"mode": "selfhost", "plan": "selfhost", "email": None, "tracked_today": 0, "daily_limit": None,
                     "history_days": None, "pro_features": True}
     new = m.call("sender_health", sender="Pace@Example.com", check_dns=False)
     assert new["sender"] == "pace@example.com" and new["emails"] == 0
@@ -296,7 +296,7 @@ def test_account_and_sender_health_selfhost(selfhost):
 def test_free_plan_gets_readable_errors(cloud_client, monkeypatch):
     m = Mcp(cloud_client, account(cloud_client))
     acct = m.call("account")
-    assert (acct["plan"], acct["daily_limit"], acct["history_days"], acct["pro_features"]) == ("free", 500, 30, False)
+    assert (acct["mode"], acct["plan"], acct["daily_limit"], acct["history_days"], acct["pro_features"]) == ("cloud", "free", 500, 30, False)
     m.call("track_email", subject="Hi", to=["a@x.com"], sender="ann@example.com", campaign="Launch")
     assert m.call("campaign_names") == {"campaigns": ["Launch"]}, "campaign names work on Free"
     for name, args, what in [
@@ -307,13 +307,13 @@ def test_free_plan_gets_readable_errors(cloud_client, monkeypatch):
         ("list_emails", {"sender": "ann@example.com"}, "sender filter"),
     ]:
         msg = m.error(name, **args)
-        assert "needs Likelyread Pro" in msg and what in msg and "Tell the user" in msg, (name, msg)
+        assert "pro_required: this needs Likelyread Pro" in msg and what in msg and "Tell the user" in msg, (name, msg)
     assert m.call("list_emails")["total"] == 1, "plain listing works on Free"
 
     monkeypatch.setitem(likelyread.FEATURES["free"], "daily_limit", 2)
     m.call("track_email", subject="Hi", to=["b@x.com"], sender="ann@example.com")
     msg = m.error("track_email", subject="Hi", to=["c@x.com"], sender="ann@example.com")
-    assert "Daily limit reached" in msg and "2 emails" in msg and "Stop the batch" in msg and "30 days" in msg
+    assert "daily_limit: this plan tracks 2 emails" in msg and "Stop the batch" in msg and "30 days" in msg
 
 
 def test_free_history_is_readable_and_pro_has_everything(cloud_client, clock):
