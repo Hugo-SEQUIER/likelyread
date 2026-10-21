@@ -393,6 +393,7 @@ def test_checkout_creates_one_customer_and_a_taxed_subscription(client, fake):
     assert sent["line_items[0][price]"] == "price_year" and sent["line_items[0][quantity]"] == "1"
     assert sent["metadata[plan]"] == "pro_yearly" and sent["subscription_data[metadata][account_id]"] == acct
     assert sent["automatic_tax[enabled]"] == "true" and sent["tax_id_collection[enabled]"] == "true"
+    assert sent["consent_collection[terms_of_service]"] == "required"
     assert sent["customer_update[address]"] == "auto" and sent["customer_update[name]"] == "auto"
     # The next checkout reuses the customer.
     client.post("/api/billing/checkout", json={"plan": "pro_monthly"}, headers=H(a))
