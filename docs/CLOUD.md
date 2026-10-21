@@ -68,7 +68,7 @@ Everything below is a one-time setup on the cloud server.
    - type: Web application;
    - authorised redirect URI: `https://app.likelyread.com/auth/google/callback`;
    - copy the client id and secret.
-3. **Stripe.** Use a Stripe account that belongs to Likelyread alone, not one shared with another business: a webhook receives every event of its account, and the API key reaches every customer in it. Its public details carry Likelyread's name, the statement descriptor `LIKELYREAD`, `hello@likelyread.com` and `https://likelyread.com`. In the [Stripe Dashboard](https://dashboard.stripe.com):
+3. **Stripe.** Use a Stripe account that belongs to Likelyread alone, not one shared with another business: a webhook receives every event of its account, and the API key reaches every customer in it. Its public details carry Likelyread's name, the statement descriptor `LIKELYREAD`, `hello@likelyread.com`, `https://likelyread.com`, and the links to `https://likelyread.com/privacy` and `https://likelyread.com/terms`. Checkout asks buyers to accept those terms and refuses to open without the terms link. In the [Stripe Dashboard](https://dashboard.stripe.com):
    - Product catalogue: *Likelyread Pro* with two recurring prices, €5 a month and €36 a year, and *Likelyread Pro Lifetime* with a one-time price of €59, all with tax behaviour *Exclusive* (VAT added on top). Copy the three price ids.
    - Tax: set up Stripe Tax with the company's address, the default tax behaviour *Exclusive* and its registrations (for a French company under the threshold above: France, *standard*, *small seller* scheme), and give both products the *Software as a service (SaaS)* tax code.
    - Customer portal (*Settings*, then *Billing*, then *Customer portal*): allow cancelling at the end of the period, switching between the monthly and yearly prices, updating the payment method and viewing invoices, then save. The dashboard's *Manage subscription and invoices* button opens it.
@@ -106,7 +106,7 @@ Everything below is a one-time setup on the cloud server.
   - *Locked features.* Locked endpoints answer 402 `{"error": "pro_required"}`, and the dashboard shows the upgrade card instead.
   - *Daily limit.* It answers 429 `{"error": "daily_limit"}`. The extension keeps the email in its retry queue.
 - **Billing:**
-  - *Checkout.* An account's first checkout creates its Stripe customer, and the server keeps the customer id. Each Checkout Session carries the account id in `client_reference_id` and in metadata, so webhooks map straight to the account. Stripe Tax adds the tax, and a business can enter its VAT number.
+  - *Checkout.* An account's first checkout creates its Stripe customer, and the server keeps the customer id. Each Checkout Session carries the account id in `client_reference_id` and in metadata, so webhooks map straight to the account. Stripe Tax adds the tax, a business can enter its VAT number, and the buyer accepts the terms of sale before paying.
   - *Webhooks.* They are verified with the `Stripe-Signature` header (HMAC-SHA256 with a 5-minute tolerance; while a signing secret is rolled, either signature is accepted) and deduplicated by event id.
   - *Cancellation.* Pro stays active until the paid period ends, plus 3 days of grace. A full refund of the lifetime payment goes back to Free.
   - *Lifetime.* It is a one-time payment, with an invoice. It is granted once the payment is confirmed, including a delayed method such as a bank debit.

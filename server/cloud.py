@@ -632,6 +632,9 @@ class Cloud:
                 # Stripe Tax needs the buyer's address; a business can add its VAT number.
                 "customer_update": {"address": "auto", "name": "auto"},
                 "tax_id_collection": {"enabled": True},
+                # Buyers accept the terms of sale before paying. Stripe takes the terms
+                # link from the account's public details and refuses the session without it.
+                "consent_collection": {"terms_of_service": "required"},
             }
             if lifetime:
                 params["invoice_creation"] = {"enabled": True}  # subscriptions are invoiced anyway
