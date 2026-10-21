@@ -33,7 +33,7 @@ What you get:
 - A toolbar popup with every tracked email and its status
 - A dashboard: every hit with its reason, and on Pro, open rates per campaign, time to first open and busiest hours
 - Sender health on Pro: checks that each address you send from is set up so inboxes trust it, suggests a safe daily pace for new addresses, and warns when opens drop
-- A command-line tool and an agent skill, so scripts and AI agents can track the emails they send
+- An MCP server, a command-line tool and an agent skill, so AI agents and scripts can track the emails they send
 
 Two ways to use it:
 - Likelyread Cloud: click Sign in with Google in the extension's settings and you are ready. The Free plan tracks every email with no signature added to it and keeps 30 days of history. Pro (from €3 a month plus VAT, billed yearly) adds campaign analytics, charts, filters and unlimited history.

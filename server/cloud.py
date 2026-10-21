@@ -63,6 +63,11 @@ PLANS = ("pro_monthly", "pro_yearly", "lifetime")
 # A paid period keeps working this long after it ends, to cover renewal delays.
 GRACE_SECONDS = 3 * 86400
 MAX_TOKENS_PER_ACCOUNT = 20
+# Tokens made on the Connect page for AI agents (MCP or the CLI). They are a pool
+# of their own: a new one replaces the oldest agent token, never a sign-in, and
+# sign-ins never push one out.
+AGENT_LABEL = "Agent"
+MAX_AGENT_TOKENS = 5
 # A token unused for this long stops working (each use refreshes it).
 TOKEN_IDLE_SECONDS = 180 * 86400
 # Dashboard tokens live in the browser's localStorage, so they lapse sooner.
@@ -213,7 +218,12 @@ class Cloud:
             return None
         if not row["last_used"] or row["last_used"] < now - 3600:
             self.db.execute("UPDATE tokens SET last_used = ? WHERE hash = ?", (now, row["hash"]))
-        return Principal(account_id=row["id"], plan=self.effective_plan(row, now), email=row["email"])
+        return Principal(
+            account_id=row["id"],
+            plan=self.effective_plan(row, now),
+            email=row["email"],
+            agent=row["label"] == AGENT_LABEL,
+        )
 
     def upsert_google_account(self, sub: str, email: str) -> str:
         email = email.strip().lower()
@@ -232,16 +242,19 @@ class Cloud:
 
     def create_token(self, account_id: str, label: str) -> str:
         token = secrets.token_urlsafe(32)
+        # Keep the newest few of the same pool: every sign-in makes one, and agent
+        # tokens only ever replace each other.
+        agent = label == AGENT_LABEL
+        pool = "label = ?" if agent else "label IS NOT ?"
         with self.db.lock:
             self.db.conn.execute(
                 "INSERT INTO tokens(hash, account_id, label, created_at) VALUES (?, ?, ?, ?)",
                 (token_hash(token), account_id, label, time.time()),
             )
-            # Keep the newest few: every sign-in makes one.
             self.db.conn.execute(
-                "DELETE FROM tokens WHERE account_id = ? AND hash NOT IN "
-                "(SELECT hash FROM tokens WHERE account_id = ? ORDER BY created_at DESC LIMIT ?)",
-                (account_id, account_id, MAX_TOKENS_PER_ACCOUNT),
+                f"DELETE FROM tokens WHERE account_id = ? AND {pool} AND hash NOT IN "
+                f"(SELECT hash FROM tokens WHERE account_id = ? AND {pool} ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                (account_id, AGENT_LABEL, account_id, AGENT_LABEL, MAX_AGENT_TOKENS if agent else MAX_TOKENS_PER_ACCOUNT),
             )
         return token
 
@@ -270,6 +283,9 @@ class Cloud:
         today = self.db.query(
             "SELECT COUNT(*) AS n FROM emails WHERE account_id = ? AND created_at >= ?", (row["id"], time.time() - 86400)
         )[0]["n"]
+        agents = self.db.query(
+            "SELECT COUNT(*) AS n FROM tokens WHERE account_id = ? AND label = ?", (row["id"], AGENT_LABEL)
+        )[0]["n"]
         return {
             "mode": "cloud",
             "email": row["email"],
@@ -283,6 +299,7 @@ class Cloud:
             "prices": self.cfg.prices,
             "lifetime_left": self.lifetime_left(),
             "admin": row["email"] in self.cfg.admin_emails,
+            "agent_tokens": agents,
         }
 
     def delete_account(self, account_id: str) -> None:
@@ -514,6 +531,12 @@ class Cloud:
         cfg = self.cfg
         secure = cfg.public_url.startswith("https://")
 
+        def person(p: Principal) -> None:
+            """Account actions need a sign-in. An agent token tracks and reads results
+            only, so an agent misled by what it reads cannot delete or export anything."""
+            if p.agent:
+                raise HTTPException(status_code=403, detail="not with an agent token: sign in to the dashboard for this")
+
         @app.get("/auth/google")
         def google_start(ext: str = ""):
             # ext is the Chrome extension's id when the extension started the sign-in.
@@ -560,6 +583,7 @@ class Cloud:
 
         @app.delete("/api/me")
         def delete_me(p: Principal = Depends(principal)):
+            person(p)
             row = self.account(p.account_id or "")
             if row is not None and row["subscription_id"] and row["plan"] == "pro" and cfg.billing_enabled:
                 # Stop billing before the account disappears.
@@ -577,6 +601,7 @@ class Cloud:
         @app.get("/api/me/export")
         def export_me(p: Principal = Depends(principal)):
             """Everything we hold for the account, as JSON (data portability)."""
+            person(p)
             row = self.account(p.account_id or "")
             emails = [dict(r) for r in self.db.query(
                 "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails WHERE account_id = ? ORDER BY sent_at",
@@ -602,11 +627,28 @@ class Cloud:
 
         @app.post("/api/me/signout-all")
         def signout_all(p: Principal = Depends(principal)):
+            person(p)
             n = self.db.execute("DELETE FROM tokens WHERE account_id = ?", (p.account_id,)).rowcount
+            return {"ok": True, "revoked": n}
+
+        @app.post("/api/me/agent-token")
+        def agent_token(p: Principal = Depends(principal)):
+            """A token for an AI agent (MCP or the CLI), returned once: only its hash is kept."""
+            person(p)
+            token = self.create_token(p.account_id or "", AGENT_LABEL)
+            return {"token": token, "label": AGENT_LABEL, "idle_days": TOKEN_IDLE_SECONDS // 86400}
+
+        @app.delete("/api/me/agent-tokens")
+        def revoke_agent_tokens(p: Principal = Depends(principal)):
+            person(p)
+            n = self.db.execute(
+                "DELETE FROM tokens WHERE account_id = ? AND label = ?", (p.account_id, AGENT_LABEL)
+            ).rowcount
             return {"ok": True, "revoked": n}
 
         @app.post("/api/billing/checkout")
         def checkout(body: CheckoutIn, p: Principal = Depends(principal)):
+            person(p)
             if not cfg.billing_enabled:
                 raise HTTPException(status_code=503, detail="billing is not configured")
             if body.plan not in PLANS:
@@ -648,6 +690,7 @@ class Cloud:
 
         @app.post("/api/billing/portal")
         def portal(p: Principal = Depends(principal)):
+            person(p)
             if not cfg.billing_enabled:
                 raise HTTPException(status_code=503, detail="billing is not configured")
             row = self.account(p.account_id or "")

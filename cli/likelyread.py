@@ -38,7 +38,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 
 class CliError(Exception):
@@ -233,7 +233,12 @@ def cmd_ls(cfg: dict, a):
 
 
 def cmd_show(cfg: dict, a):
-    return api(cfg, "GET", f"/api/emails/{urllib.parse.quote(a.id)}")
+    email = api(cfg, "GET", f"/api/emails/{urllib.parse.quote(a.id)}")
+    if not a.full:
+        # Whoever loads the pixel chooses its user agent, so it could carry instructions
+        # for an agent reading this: keep only the server's own words unless asked.
+        email["hits"] = [{k: h.get(k) for k in ("ts", "kind", "via", "reason")} for h in email.get("hits", [])]
+    return email
 
 
 def cmd_campaigns(cfg: dict, a):
@@ -326,6 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("show", help="one email with every hit and why it was classified that way")
     s.add_argument("id")
+    s.add_argument("--full", action="store_true", help="also each hit's user agent and IP, set by whoever loaded the image")
     s.set_defaults(fn=cmd_show)
 
     sub.add_parser("campaigns", help="per-campaign open rates").set_defaults(fn=cmd_campaigns)

@@ -4,7 +4,7 @@
 
 const TOKEN_KEY = "likelyread.token";
 const NO_CAMPAIGN = "__none__";
-const state = { token: null, campaign: "", sender: "", campaigns: [], senders: [], config: { mode: "selfhost" }, me: null };
+const state = { token: null, campaign: "", sender: "", campaigns: [], senders: [], config: { mode: "selfhost" }, me: null, agentToken: null, mcpClient: "claude" };
 const isCloud = () => state.config.mode === "cloud";
 const can = (feature) => !state.me || !state.me.features || state.me.features[feature] !== false;
 
@@ -113,6 +113,7 @@ function logout() {
   localStorage.removeItem(TOKEN_KEY);
   state.token = null;
   state.me = null;
+  state.agentToken = null;
   showLogin();
 }
 
@@ -435,9 +436,10 @@ async function viewEmail(root, id) {
 
 // The agent instructions download the CLI and the skill from the public repository.
 const REPO_RAW = "https://raw.githubusercontent.com/Hugo-SEQUIER/likelyread/main";
+const MASK = "•".repeat(12);
 
-/** What a user pastes to their AI agent: install the CLI and the skill, then connect
- * with the setup link. */
+/** What a user pastes to an AI agent without MCP: install the CLI and the skill, then
+ * connect with the setup link. */
 function agentInstructions(link) {
   return [
     "Set up Likelyread so you can track whether the emails you send for me get opened.",
@@ -462,8 +464,42 @@ function agentInstructions(link) {
   ].join("\n");
 }
 
+/** How each MCP client adds Likelyread's server: streamable HTTP with the token in a header. */
+const MCP_CLIENTS = [
+  { id: "claude", name: "Claude Code", where: "Run this in a terminal. The tools appear in your next Claude Code session, in every project.",
+    text: (url, auth) => `claude mcp add --transport http --scope user likelyread ${url} --header "Authorization: ${auth}"` },
+  { id: "cursor", name: "Cursor", where: "Add this to ~/.cursor/mcp.json, or to .cursor/mcp.json in one project. If the file already has servers, add likelyread next to them.",
+    text: (url, auth) => JSON.stringify({ mcpServers: { likelyread: { url, headers: { Authorization: auth } } } }, null, 2) },
+  { id: "vscode", name: "VS Code", where: "Run MCP: Open User Configuration from the command palette and add likelyread under servers.",
+    text: (url, auth) => JSON.stringify({ servers: { likelyread: { type: "http", url, headers: { Authorization: auth } } } }, null, 2) },
+  { id: "codex", name: "Codex", where: "Add this to ~/.codex/config.toml. The Codex CLI, IDE extension and app all read it.",
+    text: (url, auth) => `[mcp_servers.likelyread]\nurl = "${url}"\nhttp_headers = { "Authorization" = "${auth}" }` },
+  { id: "other", name: "Other clients", where: "Most MCP clients take a streamable HTTP server: this address, with this Authorization header.",
+    text: (url, auth) => JSON.stringify({ mcpServers: { likelyread: { type: "http", url, headers: { Authorization: auth } } } }, null, 2) },
+];
+
+/** Copy text. When the clipboard is blocked, show it in place, selected, to copy by hand. */
+async function copyOrSelect(text, shownIn, msg, done) {
+  try {
+    await navigator.clipboard.writeText(text);
+    msg.textContent = done;
+  } catch {
+    shownIn.textContent = text;
+    getSelection().selectAllChildren(shownIn);
+    msg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
+  }
+}
+
 function viewConnect(root) {
-  const link = `${location.origin}/#connect=${state.token}`;
+  const cloud = isCloud();
+  const place = cloud ? "your account" : "this server";
+  // On the cloud an agent gets a token of its own, made on request and kept only in
+  // this page. A self-hosted server has one token, the one this dashboard uses.
+  const token = () => (cloud ? state.agentToken : state.token);
+  const mcpUrl = `${location.origin}/mcp`;
+  const setupLink = (t) => `${location.origin}/#connect=${t}`;
+
+  const link = setupLink(state.token);
   const field = h("input", { type: "password", value: link, readonly: true, "aria-label": "Setup link", class: "link-field" });
   const msg = h("span", { class: "muted small" });
   const copy = async () => {
@@ -476,48 +512,91 @@ function viewConnect(root) {
       msg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
     }
   };
-  // On screen the token is masked, like the link field; the copy has the real link.
-  const prompt = h("pre", { class: "agent-prompt" }, agentInstructions(`${location.origin}/#connect=${"•".repeat(12)}`));
+
+  // On screen the token is masked; only what is copied carries it.
+  const client = () => MCP_CLIENTS.find((c) => c.id === state.mcpClient) || MCP_CLIENTS[0];
+  const snippet = h("pre", { class: "agent-prompt", "aria-label": "Setup for your agent" });
+  const where = h("p", { class: "muted client-where" });
+  const snippetMsg = h("span", { class: "muted small", role: "status" });
+  const copySnippet = h("button", { class: "btn primary", type: "button", onclick: () =>
+    copyOrSelect(client().text(mcpUrl, `Bearer ${token()}`), snippet, snippetMsg, "Copied. The token is in the copy, not on screen.") }, "Copy");
+  const picker = h("div", { class: "client-picker", role: "group", "aria-label": "Your agent" });
+  const prompt = h("pre", { class: "agent-prompt" }, agentInstructions(setupLink(MASK)));
   const promptMsg = h("span", { class: "muted small", role: "status" });
-  const copyPrompt = async () => {
-    const text = agentInstructions(link);
-    try {
-      await navigator.clipboard.writeText(text);
-      promptMsg.textContent = "Copied. Paste it to your agent.";
-    } catch {
-      prompt.textContent = text;
-      getSelection().selectAllChildren(prompt);
-      promptMsg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
+  const copyPrompt = h("button", { class: "btn", type: "button", onclick: () =>
+    copyOrSelect(agentInstructions(setupLink(token())), prompt, promptMsg, "Copied. Paste it to your agent.") }, "Copy instructions");
+
+  const show = () => {
+    const c = client();
+    snippet.textContent = c.text(mcpUrl, `Bearer ${MASK}`);
+    where.textContent = c.where;
+    snippetMsg.textContent = "";
+    for (const b of picker.children) b.setAttribute("aria-pressed", String(b.dataset.client === c.id));
+    for (const b of [copySnippet, copyPrompt]) {
+      b.disabled = !token();
+      b.title = token() ? "" : "Create an agent token first";
     }
   };
+  picker.append(...MCP_CLIENTS.map((c) => h("button", { type: "button", dataset: { client: c.id }, onclick: () => { state.mcpClient = c.id; show(); } }, c.name)));
+
+  const createMsg = h("span", { class: "muted small", role: "status" });
+  // Made on click, never on page load: each one is a new credential.
+  const createButton = h("button", { class: "btn primary", type: "button", onclick: async () => {
+    createButton.disabled = true;
+    createMsg.textContent = "Creating…";
+    try {
+      const { data } = await api("/api/me/agent-token", { method: "POST" });
+      state.agentToken = data.token;
+      createMsg.textContent = "Created. It is in what you copy below, never on screen, and only this page has it: copy what you need before you leave.";
+      createButton.textContent = "Create another";
+    } catch (err) {
+      createMsg.textContent = err.message;
+    }
+    createButton.disabled = false;
+    show();
+  } }, state.agentToken ? "Create another" : "Create agent token");
+
   const step = (n, title, body) => h("li", { class: "connect-step" }, h("span", { class: "connect-n" }, n), h("div", {}, h("h3", {}, title), body));
   root.append(
     h("section", { class: "headline" },
       h("h1", {}, "Connect", h("br"), h("span", { class: "rate" }, "your tools")),
-      h("p", {}, `One setup link connects the Chrome extension, an AI agent or a script to ${isCloud() ? "your account" : "this server"}. It contains your private token: treat it like a password.`),
+      h("p", {}, cloud
+        ? "Your AI agent connects over MCP with one command and a token of its own. The Chrome extension signs in with Google."
+        : "Your AI agent connects over MCP with one command. The Chrome extension and other browsers use your setup link. Both carry your private token: treat them like a password."),
+    ),
+    h("section", {},
+      sectionHead("Connect your agent"),
+      h("p", { class: "muted agent-note" }, `Claude Code, Cursor, VS Code, Codex and other MCP clients, with nothing to install. Your agent gets Likelyread's tools and its rules: it asks before tracking a campaign, keeps a safe pace and reports opens honestly.`),
+      cloud
+        ? h("div", { class: "agent-token" },
+            h("div", { class: "inline-form" }, createButton, createMsg),
+            h("p", { class: "muted small agent-note" }, "An agent token tracks emails and reads results. It cannot change, export or delete your account, and stops working after 180 days unused. You can keep 5: a sixth replaces the oldest. Revoke them under Account."))
+        : null,
+      picker,
+      where,
+      snippet,
+      h("div", { class: "inline-form copy-row" }, copySnippet, snippetMsg),
+    ),
+    h("section", {},
+      sectionHead("Agents without MCP, and scripts", h("div", { class: "inline-form" }, promptMsg, copyPrompt)),
+      h("p", { class: "muted agent-note" }, `For an agent that runs commands but has no MCP, or for a script. The instructions install the likelyread command and its skill, then connect them to ${place}${cloud ? " with the agent token" : ""}. The token goes in when you copy.`),
+      prompt,
     ),
     h("section", {},
       sectionHead("Your setup link"),
       h("div", { class: "inline-form" },
         field,
-        h("button", { class: "btn primary", type: "button", onclick: copy }, "Copy link"),
+        h("button", { class: "btn", type: "button", onclick: copy }, "Copy link"),
         h("button", { class: "btn ghost", type: "button", onclick: () => { field.type = field.type === "password" ? "text" : "password"; } }, "Show"),
         msg),
-    ),
-    h("ol", { class: "connect-steps" },
-      isCloud()
-        ? step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension and click Sign in with Google in its settings. Then write an email in Gmail: the red eye next to Send means it is tracked."))
-        : step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension, open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
-      step("2", "AI agents and scripts", h("p", {}, "Copy the instructions below and paste them to your agent. For a script, run ", h("code", {}, "likelyread setup 'LINK'"), " once on the machine, with the link above.")),
-      step("3", "Another browser", h("p", {}, "Open the setup link there to sign in to this dashboard.")),
-    ),
-    h("section", {},
-      sectionHead("Instructions for your agent",
-        h("div", { class: "inline-form" }, promptMsg, h("button", { class: "btn", type: "button", onclick: copyPrompt }, "Copy instructions"))),
-      h("p", { class: "muted agent-note" }, `For Claude Code, Codex or any agent that runs commands. They install the likelyread command and its skill, then connect it to ${isCloud() ? "your account" : "this server"}. Your setup link goes in when you copy.`),
-      prompt,
+      h("ol", { class: "connect-steps two" },
+        cloud
+          ? step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension and click Sign in with Google in its settings. Then write an email in Gmail: the red eye next to Send means it is tracked."))
+          : step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension, open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
+        step("2", "Another browser", h("p", {}, "Open the setup link there to sign in to this dashboard."))),
     ),
   );
+  show();
 }
 
 async function viewAccount(root) {
@@ -582,7 +661,15 @@ async function viewAccount(root) {
           await api("/api/me/signout-all", { method: "POST" });
           logout();
         } }, "Sign out everywhere"),
-        h("button", { class: "btn", type: "button", onclick: exportData }, "Download my data")),
+        h("button", { class: "btn", type: "button", onclick: exportData }, "Download my data"),
+        me.agent_tokens
+          ? h("button", { class: "btn", type: "button", onclick: async () => {
+              if (!confirm("Revoke every agent token? Agents connected with them stop working until you connect them again.")) return;
+              await api("/api/me/agent-tokens", { method: "DELETE" });
+              state.agentToken = null;
+              await render();
+            } }, `Revoke agent tokens (${me.agent_tokens})`)
+          : null),
     ),
     h("div", { class: "danger-zone" },
       h("button", { class: "btn danger small", type: "button", onclick: async () => {
