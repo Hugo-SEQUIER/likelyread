@@ -98,6 +98,7 @@ Everything below is a one-time setup on the cloud server.
   - *Sign-in.* The dashboard and the extension use Google. PKCE and a signed 10-minute cookie protect the round trip.
   - *Tokens.* Each sign-in creates a bearer token. The server stores only its SHA-256 hash and keeps the 20 newest per account. *Sign out everywhere* revokes them all.
   - *Extension handoff.* The extension opens `/auth/google?ext=<extension id>`. After sign-in, the page hands the token to the extension with `chrome.runtime.sendMessage`. The manifest lists `https://app.likelyread.com/*` under `externally_connectable`, and the extension accepts the message only from that origin.
+  - *Agents.* The dashboard's **Connect** page has instructions to paste to an AI agent. They install the CLI and the agent skill from GitHub and run `likelyread setup` with the setup link of that browser, so the agent shares the browser's token. On screen the token is masked; only the copy carries it.
 - **Data isolation:**
   - *Scoping.* Every query is scoped to the account.
   - *Pixel ids.* An id registered by one account can never be claimed by another; the server answers 409.
@@ -112,7 +113,7 @@ Everything below is a one-time setup on the cloud server.
   - *Lifetime.* It is a one-time payment, with an invoice. It is granted once the payment is confirmed, including a delayed method such as a bank debit.
 - **Hardening:**
   - *Daily limit.* It counts the server's registration time, so a client-supplied `age` cannot dodge it.
-  - *Idle tokens.* An extension or agent token unused for 180 days stops working; a dashboard token (kept in the browser) after 30 days.
+  - *Idle tokens.* An extension token unused for 180 days stops working; a dashboard token (kept in the browser) after 30 days. An agent uses the token of the browser it was connected from, so it gets that token's limit: 30 days after a sign-in on the dashboard, 180 after one from the extension.
   - *Subscription events.* An event for a subscription other than the current live one never changes the plan.
   - *One subscription at a time.* Checkout refuses a second subscription while one is live.
   - *Deleting an account.* It cancels the subscription in Stripe first. A tombstone records the deleted account, so late events are recognised.
