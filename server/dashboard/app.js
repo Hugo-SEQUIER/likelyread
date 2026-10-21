@@ -433,6 +433,35 @@ async function viewEmail(root, id) {
   );
 }
 
+// The agent instructions download the CLI and the skill from the public repository.
+const REPO_RAW = "https://raw.githubusercontent.com/Hugo-SEQUIER/likelyread/main";
+
+/** What a user pastes to their AI agent: install the CLI and the skill, then connect
+ * with the setup link. */
+function agentInstructions(link) {
+  return [
+    "Set up Likelyread so you can track whether the emails you send for me get opened.",
+    "",
+    "1. Install the likelyread command (one Python 3.9+ file, no dependencies):",
+    "   mkdir -p ~/.local/bin",
+    `   curl -fsSL ${REPO_RAW}/cli/likelyread.py -o ~/.local/bin/likelyread`,
+    "   chmod +x ~/.local/bin/likelyread",
+    "   If ~/.local/bin is not on your PATH, call it by its full path.",
+    "",
+    "2. Install the Likelyread skill. For Claude Code:",
+    "   mkdir -p ~/.claude/skills/likelyread",
+    `   curl -fsSL ${REPO_RAW}/skills/likelyread/SKILL.md -o ~/.claude/skills/likelyread/SKILL.md`,
+    "   Other agents: save that file where you keep skills, or read it now and follow it whenever you send email for me.",
+    "",
+    `3. Connect it to my ${isCloud() ? "account" : "server"}:`,
+    `   likelyread setup '${link}'`,
+    "   likelyread ping",
+    "   The link contains my private token. Use it only in that command: never print it, log it or put it in an email.",
+    "",
+    "4. Tell me when it works. Then follow the skill: ask me before you track any campaign.",
+  ].join("\n");
+}
+
 function viewConnect(root) {
   const link = `${location.origin}/#connect=${state.token}`;
   const field = h("input", { type: "password", value: link, readonly: true, "aria-label": "Setup link", class: "link-field" });
@@ -445,6 +474,20 @@ function viewConnect(root) {
       field.type = "text";
       field.select();
       msg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
+    }
+  };
+  // On screen the token is masked, like the link field; the copy has the real link.
+  const prompt = h("pre", { class: "agent-prompt" }, agentInstructions(`${location.origin}/#connect=${"•".repeat(12)}`));
+  const promptMsg = h("span", { class: "muted small", role: "status" });
+  const copyPrompt = async () => {
+    const text = agentInstructions(link);
+    try {
+      await navigator.clipboard.writeText(text);
+      promptMsg.textContent = "Copied. Paste it to your agent.";
+    } catch {
+      prompt.textContent = text;
+      getSelection().selectAllChildren(prompt);
+      promptMsg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
     }
   };
   const step = (n, title, body) => h("li", { class: "connect-step" }, h("span", { class: "connect-n" }, n), h("div", {}, h("h3", {}, title), body));
@@ -465,8 +508,14 @@ function viewConnect(root) {
       isCloud()
         ? step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension and click Sign in with Google in its settings. Then write an email in Gmail: the red eye next to Send means it is tracked."))
         : step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension, open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
-      step("2", "AI agents and scripts", h("p", {}, "Run ", h("code", {}, "likelyread setup 'LINK'"), " once on the machine, with the link above. The agent skill in the repository explains the rest.")),
+      step("2", "AI agents and scripts", h("p", {}, "Copy the instructions below and paste them to your agent. For a script, run ", h("code", {}, "likelyread setup 'LINK'"), " once on the machine, with the link above.")),
       step("3", "Another browser", h("p", {}, "Open the setup link there to sign in to this dashboard.")),
+    ),
+    h("section", {},
+      sectionHead("Instructions for your agent",
+        h("div", { class: "inline-form" }, promptMsg, h("button", { class: "btn", type: "button", onclick: copyPrompt }, "Copy instructions"))),
+      h("p", { class: "muted agent-note" }, `For Claude Code, Codex or any agent that runs commands. They install the likelyread command and its skill, then connect it to ${isCloud() ? "your account" : "this server"}. Your setup link goes in when you copy.`),
+      prompt,
     ),
   );
 }

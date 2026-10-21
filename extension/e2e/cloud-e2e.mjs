@@ -208,6 +208,20 @@ try {
   });
   check("token unchanged", forged === stored.token);
 
+  // 7. Connect: instructions to paste to an AI agent; only the copy carries the token
+  await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: CLOUD });
+  await tab.bringToFront();
+  await tab.click('[data-tab="connect"]');
+  await tab.waitForSelector(".agent-prompt", { timeout: 5000 });
+  const token = await tab.evaluate(() => sessionStorage.getItem("likelyread.token"));
+  const shown = await tab.textContent(".agent-prompt");
+  check("agent instructions shown with the token masked", shown.includes("likelyread setup '") && !!token && !shown.includes(token));
+  await tab.click("text=Copy instructions");
+  await tab.waitForSelector("text=Copied. Paste it to your agent.", { timeout: 5000 }).catch(() => {});
+  const copied = await tab.evaluate(() => navigator.clipboard.readText());
+  check("copied instructions carry the setup link and the skill", copied.includes(`likelyread setup '${CLOUD}/#connect=${token}'`) && copied.includes("/skills/likelyread/SKILL.md"));
+  await shot(tab, "8-connect");
+
   check("no console errors", errors.length === 0, errors.slice(0, 5).join(" | "));
 } catch (err) {
   check("run finished", false, err.stack);
