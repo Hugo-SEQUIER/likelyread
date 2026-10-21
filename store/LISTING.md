@@ -36,7 +36,7 @@ What you get:
 - A command-line tool and an agent skill, so scripts and AI agents can track the emails they send
 
 Two ways to use it:
-- Likelyread Cloud: click Sign in with Google in the extension's settings and you are ready. The Free plan tracks every email with no signature added to it and keeps 30 days of history. Pro (from $3 a month, billed yearly) adds campaign analytics, charts, filters and unlimited history.
+- Likelyread Cloud: click Sign in with Google in the extension's settings and you are ready. The Free plan tracks every email with no signature added to it and keeps 30 days of history. Pro (from €3 a month plus VAT, billed yearly) adds campaign analytics, charts, filters and unlimited history.
 - Self-hosted: install the open-source server on any small Linux machine with one command and paste the setup link it prints. Every feature, free, and your data never leaves your server.
 
 The extension has no analytics and loads no code from the internet. Open source, MIT licence.

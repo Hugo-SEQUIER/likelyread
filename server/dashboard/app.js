@@ -279,7 +279,7 @@ function upsell(feature, title, points) {
     h("p", { class: "eyebrow" }, "Likelyread Pro"),
     h("h2", {}, title),
     h("ul", {}, points.map((p) => h("li", {}, p))),
-    h("p", { class: "muted small" }, `${prices.pro_monthly || "$5"} a month, or ${prices.pro_yearly || "$36"} a year.`),
+    h("p", { class: "muted small" }, `${prices.pro_monthly || "€5"} a month, or ${prices.pro_yearly || "€36"} a year, plus VAT.`),
     h("a", { class: "btn primary", href: "#/account" }, "Upgrade"),
   );
 }
@@ -514,9 +514,10 @@ async function viewAccount(root) {
       ? h("section", {},
           sectionHead("Upgrade to Pro", h("span", { class: "muted" }, "Campaign analytics, sender health, charts, filters and full history")),
           h("div", { class: "plans" },
-            plan("pro_yearly", "Yearly", p.pro_yearly || "$36", " / year", "Three months free compared with monthly.", true),
-            plan("pro_monthly", "Monthly", p.pro_monthly || "$5", " / month", "Cancel any time."),
-            me.lifetime_left > 0 ? plan("lifetime", "Lifetime", p.lifetime || "$59", " once", `Pay once, keep Pro. ${me.lifetime_left} left at this price.`) : null),
+            plan("pro_yearly", "Yearly", p.pro_yearly || "€36", " / year", "Three months free compared with monthly.", true),
+            plan("pro_monthly", "Monthly", p.pro_monthly || "€5", " / month", "Cancel any time."),
+            me.lifetime_left > 0 ? plan("lifetime", "Lifetime", p.lifetime || "€59", " once", `Pay once, keep Pro. ${me.lifetime_left} left at this price.`) : null),
+          h("p", { class: "muted small" }, "Prices exclude VAT, which is added at checkout where it applies."),
           msg)
       : null,
     isPro && me.billing && me.billing_plan !== "lifetime"

@@ -9,7 +9,7 @@ sales tax. Likelyread is the seller. Self-hosting stays free with every feature.
 
 | | Free | Pro | Self-hosted |
 |---|---|---|---|
-| Price | $0 | $5 / month, $36 / year, or $59 once (first 500) | $0, your server |
+| Price (excluding VAT) | €0 | €5 / month, €36 / year, or €59 once (first 500) | €0, your server |
 | Tracked emails | 500 a day | 5,000 a day | Unlimited |
 | Every open, with time and verdict | Yes | Yes | Yes |
 | "Sent with" signature in your emails | Never | Never | Never |
@@ -30,7 +30,7 @@ What Mailsuite (Mailtrack) charges, from [their pricing page](https://mailsuite.
 How Likelyread beats them:
 
 - **A more generous free plan:** every open, no signature in your emails, and 30 days of history.
-- **A cheaper Pro with more in it:** $5 a month, or $3 a month paid yearly. It includes the full history that Mailsuite keeps for its $19.99 plan.
+- **A cheaper Pro with more in it:** €5 a month, or €3 a month paid yearly, plus VAT. It includes the full history that Mailsuite keeps for its $19.99 plan.
 - **Reasons no competitor shows:** every hit gets a verdict that explains why it counted. Gmail proxy, Apple prefetch and your own views are told apart.
 - **Trust:** the code is open source, and self-hosting is free.
 
@@ -38,7 +38,7 @@ How Likelyread beats them:
 
 **Running costs.** One €5 to €10 VPS serves thousands of accounts. A pixel hit is one SQLite insert, and a tracked email is about 1 KB.
 
-**Payment fees.** Likelyread sells through its own Stripe account, so it is the seller. Stripe Tax calculates and collects VAT and sales tax at checkout; the tax returns (the EU's OSS return, and any other registration) are filed from Stripe Tax's reports. Stripe's prices for an account in France ([stripe.com/en-fr/pricing](https://stripe.com/en-fr/pricing), checked October 2026):
+**Payment fees.** Likelyread sells through its own Stripe account, so it is the seller. Prices are in euros and exclude VAT: Stripe Tax calculates and adds it at checkout, and the tax returns are filed from Stripe Tax's reports. While the company's cross-border EU sales to consumers stay under €10,000 a year, French VAT applies to every EU consumer (Stripe's *small seller* scheme); above that, register for the EU's OSS. Stripe tracks that threshold per Stripe account, so add up every account the company sells through. Stripe's prices for an account in France ([stripe.com/en-fr/pricing](https://stripe.com/en-fr/pricing), checked October 2026):
 
 - **Cards:** 1.5% + €0.25 for standard EEA cards. Premium and international cards cost more, and so does a payment that has to be converted to the account's currency.
 - **Stripe Billing:** from 0.7% of subscription revenue.
@@ -68,10 +68,10 @@ Everything below is a one-time setup on the cloud server.
    - type: Web application;
    - authorised redirect URI: `https://app.likelyread.com/auth/google/callback`;
    - copy the client id and secret.
-3. **Stripe.** In the [Stripe Dashboard](https://dashboard.stripe.com):
-   - Product catalogue: *Likelyread Pro* with two recurring prices, $5 a month and $36 a year, and *Likelyread Pro Lifetime* with a one-time price of $59. Copy the three price ids.
-   - Tax: set up Stripe Tax (your origin address and your registrations, such as the EU's OSS) and give both products a *Software as a service (SaaS)* tax code.
-   - Customer portal (*Settings*, then *Billing*, then *Customer portal*): allow cancelling at the end of the period, updating the payment method and viewing invoices, then save. The dashboard's *Manage subscription and invoices* button opens it.
+3. **Stripe.** Use a Stripe account that belongs to Likelyread alone, not one shared with another business: a webhook receives every event of its account, and the API key reaches every customer in it. Its public details carry Likelyread's name, the statement descriptor `LIKELYREAD`, `hello@likelyread.com` and `https://likelyread.com`. In the [Stripe Dashboard](https://dashboard.stripe.com):
+   - Product catalogue: *Likelyread Pro* with two recurring prices, €5 a month and €36 a year, and *Likelyread Pro Lifetime* with a one-time price of €59, all with tax behaviour *Exclusive* (VAT added on top). Copy the three price ids.
+   - Tax: set up Stripe Tax with the company's address, the default tax behaviour *Exclusive* and its registrations (for a French company under the threshold above: France, *standard*, *small seller* scheme), and give both products the *Software as a service (SaaS)* tax code.
+   - Customer portal (*Settings*, then *Billing*, then *Customer portal*): allow cancelling at the end of the period, switching between the monthly and yearly prices, updating the payment method and viewing invoices, then save. The dashboard's *Manage subscription and invoices* button opens it.
    - API key: a restricted key with *Write* on Customers, Checkout Sessions, Customer portal and Subscriptions.
    - Webhook: an endpoint `https://app.likelyread.com/webhooks/stripe` with the events listed in `deploy/cloud.env.example`. Copy its signing secret.
    - Test everything in test mode first, with test-mode prices, key and webhook.

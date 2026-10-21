@@ -126,9 +126,9 @@ class CloudSettings:
         # Stripe Tax adds VAT and sales tax at checkout; off only while it is not set up.
         self.stripe_tax = e.get("STRIPE_TAX", "true").strip().lower() not in ("0", "false", "no", "off")
         self.prices = {
-            "pro_monthly": e.get("PRICE_PRO_MONTHLY", "$5"),
-            "pro_yearly": e.get("PRICE_PRO_YEARLY", "$36"),
-            "lifetime": e.get("PRICE_LIFETIME", "$59"),
+            "pro_monthly": e.get("PRICE_PRO_MONTHLY", "€5"),
+            "pro_yearly": e.get("PRICE_PRO_YEARLY", "€36"),
+            "lifetime": e.get("PRICE_LIFETIME", "€59"),
         }
         self.lifetime_cap = int(e.get("LIFETIME_CAP", "500"))
         self.admin_emails = {a.strip().lower() for a in e.get("ADMIN_EMAILS", "").split(",") if a.strip()}
