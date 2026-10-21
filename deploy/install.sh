@@ -240,7 +240,10 @@ Next:
   2. In its settings, paste the setup link and click Save.
   3. Open the link in your browser to see your dashboard.
 
-For an AI agent or script on any machine:
+For an AI agent, over MCP. Claude Code:
+  claude mcp add --transport http --scope user likelyread $BASE/mcp --header "Authorization: Bearer $TOKEN"
+  Cursor, VS Code, Codex and others: see Connect on the dashboard.
+For a script, or an agent without MCP:
   likelyread setup '$LINK'
 
 Show this link again:   sudo bash $DIR/deploy/install.sh --show-link --dir $DIR

@@ -14,7 +14,7 @@ sales tax. Likelyread is the seller. Self-hosting stays free with every feature.
 | Every open, with time and verdict | Yes | Yes | Yes |
 | "Sent with" signature in your emails | Never | Never | Never |
 | Pick a campaign in Gmail's compose window | Yes | Yes | Yes |
-| Agent CLI and API | Yes | Yes | Yes |
+| Agent MCP, CLI and API | Yes | Yes | Yes |
 | History | 30 days | Unlimited | Unlimited |
 | Campaign analytics, charts, filters by campaign and sender | No | Yes | Yes |
 | Sender health: SPF/DKIM/DMARC checks, daily pace guide, open-rate drop alerts | No | Yes | Yes |
@@ -96,16 +96,17 @@ Everything below is a one-time setup on the cloud server.
 
 - **Accounts and sign-in:**
   - *Sign-in.* The dashboard and the extension use Google. PKCE and a signed 10-minute cookie protect the round trip.
-  - *Tokens.* Each sign-in creates a bearer token. The server stores only its SHA-256 hash and keeps the 20 newest per account. *Sign out everywhere* revokes them all.
+  - *Tokens.* Each sign-in creates a bearer token, and the Connect page creates agent tokens on request. The server stores only the SHA-256 hash of each. Per account it keeps the 20 newest sign-in tokens and the 5 newest agent tokens, in separate pools: a sign-in never pushes out an agent token, and a sixth agent token replaces the oldest agent token, never a sign-in. *Sign out everywhere* revokes them all; *Revoke agent tokens* (Account, Security) revokes only the agent tokens.
   - *Extension handoff.* The extension opens `/auth/google?ext=<extension id>`. After sign-in, the page hands the token to the extension with `chrome.runtime.sendMessage`. The manifest lists `https://app.likelyread.com/*` under `externally_connectable`, and the extension accepts the message only from that origin.
-  - *Agents.* The dashboard's **Connect** page has instructions to paste to an AI agent. They install the CLI and the agent skill from GitHub and run `likelyread setup` with the setup link of that browser, so the agent shares the browser's token. On screen the token is masked; only the copy carries it.
+  - *Agents.* AI agents connect over MCP at `https://app.likelyread.com/mcp`, with the token in an `Authorization: Bearer` header. On the dashboard's **Connect** page, *Create agent token* makes a token labelled `Agent` (`POST /api/me/agent-token`) when clicked, never on page load. It fills in the setup for Claude Code, Cursor, VS Code, Codex and other MCP clients, and the instructions for agents without MCP (they install the CLI and the agent skill from GitHub and run `likelyread setup`) use the same token. The server returns the token once; on screen it is masked, and only the copy carries it.
+  - *What an agent token can do.* Track emails and read results, through MCP or the API. Account actions answer 403 with it: deleting or exporting the account, signing out everywhere, checkout and the billing portal, and creating or revoking agent tokens. An agent misled by something it read cannot touch the account.
 - **Data isolation:**
   - *Scoping.* Every query is scoped to the account.
   - *Pixel ids.* An id registered by one account can never be claimed by another; the server answers 409.
   - *Self-view pings.* Suppress pings count only for the account that sent them, so nobody can hide someone else's opens.
 - **Plans:**
-  - *Locked features.* Locked endpoints answer 402 `{"error": "pro_required"}`, and the dashboard shows the upgrade card instead.
-  - *Daily limit.* It answers 429 `{"error": "daily_limit"}`. The extension keeps the email in its retry queue.
+  - *Locked features.* Locked endpoints answer 402 `{"error": "pro_required"}`, and the dashboard shows the upgrade card instead. The MCP tools return a sentence that names the Pro feature, for the agent to pass on.
+  - *Daily limit.* It answers 429 `{"error": "daily_limit"}`. The extension keeps the email in its retry queue; the MCP tool `track_email` tells the agent to stop the batch and register the sent emails later.
 - **Billing:**
   - *Checkout.* An account's first checkout creates its Stripe customer, and the server keeps the customer id. Each Checkout Session carries the account id in `client_reference_id` and in metadata, so webhooks map straight to the account. Stripe Tax adds the tax, a business can enter its VAT number, and the buyer accepts the terms of sale before paying.
   - *Webhooks.* They are verified with the `Stripe-Signature` header (HMAC-SHA256 with a 5-minute tolerance; while a signing secret is rolled, either signature is accepted) and deduplicated by event id.
@@ -113,7 +114,7 @@ Everything below is a one-time setup on the cloud server.
   - *Lifetime.* It is a one-time payment, with an invoice. It is granted once the payment is confirmed, including a delayed method such as a bank debit.
 - **Hardening:**
   - *Daily limit.* It counts the server's registration time, so a client-supplied `age` cannot dodge it.
-  - *Idle tokens.* An extension token unused for 180 days stops working; a dashboard token (kept in the browser) after 30 days. An agent uses the token of the browser it was connected from, so it gets that token's limit: 30 days after a sign-in on the dashboard, 180 after one from the extension.
+  - *Idle tokens.* An extension or agent token unused for 180 days stops working; a dashboard token (kept in the browser) after 30 days. Agents connected from the Connect page have an agent token of their own, so they no longer lapse with the browser's.
   - *Subscription events.* An event for a subscription other than the current live one never changes the plan.
   - *One subscription at a time.* Checkout refuses a second subscription while one is live.
   - *Deleting an account.* It cancels the subscription in Stripe first. A tombstone records the deleted account, so late events are recognised.
@@ -135,3 +136,4 @@ cd extension && CHROME_PATH=... PYTHON=... npm run e2e:cloud
 - Google sign-in from the extension's settings, and the token handoff.
 - Tracking on Free, and the locked analytics.
 - Checkout, the webhook, and the Pro unlock.
+- Connect: an agent token made only on click, the Claude Code command copied with it, that token listing the tools on `/mcp`, and the tokens masked on screen.

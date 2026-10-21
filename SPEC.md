@@ -4,7 +4,7 @@ Self-hosted, open-source email open tracking for Gmail, for a single user.
 It tells you when someone opens an email you sent, with no third-party SaaS involved.
 
 - **License:** MIT
-- **Status:** v0.2 implemented: the v0.1 spec plus a campaign dashboard, a campaign picker in Gmail, the sender address, per-hit reasons and a CLI for agents (marked **[added]** below)
+- **Status:** v0.2 implemented: the v0.1 spec plus a campaign dashboard, a campaign picker in Gmail, the sender address, per-hit reasons, a CLI for agents and an MCP endpoint for agents (marked **[added]** below)
 
 ---
 
@@ -14,7 +14,7 @@ It tells you when someone opens an email you sent, with no third-party SaaS invo
 - Track opens of emails sent from **Gmail web** (Chrome).
 - **Self-hosted** on any VPS with a single `docker compose up`.
 - **Single user**: one server, one token, one Gmail account. No accounts and no multi-tenancy.
-- Minimal surface: one small server, one Chrome extension and **[added]** one dependency-free CLI for scripts and AI agents.
+- Minimal surface: one small server, one Chrome extension and **[added]** one dependency-free CLI for scripts and AI agents. **[added]** The server also speaks MCP at `/mcp`, so an AI agent connects with one command and no download.
 - Honest data: label each hit as an open, a self-view or a prefetch, and never present a hit as proof.
 - **[added]** A token-protected web dashboard on the server to follow campaigns: open rates per campaign, a 30-day timeline, opens by hour, recent opens, and per-email detail.
 
@@ -44,7 +44,7 @@ It tells you when someone opens an email you sent, with no third-party SaaS invo
 
 | Component | Tech |
 |---|---|
-| Server | Python 3.11+, FastAPI, Uvicorn, SQLite (WAL), stdlib only beyond FastAPI |
+| Server | Python 3.11+, FastAPI, Uvicorn, SQLite (WAL), dnspython (sender health), the official MCP Python SDK (`/mcp`) |
 | Reverse proxy / TLS | Caddy (automatic Let's Encrypt) |
 | Packaging | Dockerfile + `docker-compose.yml` |
 | Extension | Chrome Manifest V3, TypeScript, no framework, no third-party SDK (no InboxSDK app ID required) |
@@ -66,6 +66,7 @@ It tells you when someone opens an email you sent, with no third-party SaaS invo
 | `ALLOWED_ORIGINS` | empty | Comma-separated CORS origins for `/api/*` (the extension origin). |
 | `PIXEL_RATE_PER_MIN` | `60` | **[added]** Pixel hits logged per IP per minute; extra requests still get the GIF. |
 | `DASHBOARD` | `true` | **[added]** Serve the web dashboard at `/`. |
+| `PUBLIC_URL`, `DOMAIN`, `HTTPS_PORT` | | **[added]** The public address in the pixel URLs the MCP tools build: `PUBLIC_URL`, else `https://DOMAIN` (with `:HTTPS_PORT` when not 443), never the address of the request. Without either, the tools that build a pixel URL return an error. |
 
 ### 3.2 Data model
 
@@ -107,6 +108,7 @@ suppressions(
 | `GET` | `/api/senders` | bearer | **[added]** Addresses emails were sent from, with counts. |
 | `GET` | `/api/stats?campaign=&sender=&days=30&tz=` | bearer | **[added]** Dashboard KPIs, daily timeline (sent vs opens) and opens by hour, both over the last `days`; recent opens. `tz` is minutes east of UTC. |
 | `GET` | `/api/ping` | bearer | Auth and connectivity check, used by the extension's options page. |
+| `POST` | `/mcp` | bearer | **[added]** MCP endpoint for AI agents: streamable HTTP, stateless, plain JSON answers (the server never pushes). Same token, plans and limits as `/api/*`, through the same code. Tools: `account`, `new_pixel`, `text_to_html`, `track_email`, `list_emails`, `get_email`, `set_campaign`, `campaign_names`, `list_campaigns`, `get_stats`, `sender_health`; the server's instructions carry the agent skill's rules. |
 | `GET` | `/healthz` | public | Liveness check. |
 
 Pixel response headers: `Cache-Control: no-store, no-cache, must-revalidate, private, max-age=0`, `Pragma: no-cache`, `Expires: 0`.
@@ -144,6 +146,8 @@ Classification is computed at read time so the rules can be improved later witho
 - Rate-limit `/p/*` per IP (`PIXEL_RATE_PER_MIN`, default 60/min) so the log can't be flooded. Done in the server because stock Caddy has no rate limiter. Over-limit requests still get the GIF but are not logged.
 - Caddy overwrites `X-Forwarded-For` with the real client address, and the server only trusts that header from private (Docker) addresses (`FORWARDED_ALLOW_IPS`), so stored IPs and rate-limit keys can't be spoofed.
 - `__none__` is reserved as the "uncategorized" filter value and can't be used as a campaign name.
+- **[added]** `/mcp` refuses a request whose `Origin` header is not the server's own address (403, against DNS rebinding, as the MCP spec requires), then checks the bearer token exactly as `/api/*` does (401 with `WWW-Authenticate: Bearer`).
+- **[added]** Agents never receive a hit's user agent or IP: whoever loads the pixel chooses the user agent, so it could carry instructions. `get_email` returns each hit's time, kind, via and reason (the server's own words), and the CLI's `show` does the same unless given `--full`.
 - **[changed]** The dashboard is a static page that holds no data. Everything it shows comes from the authenticated API, so it needs the same token. It is served with a strict CSP and can be turned off with `DASHBOARD=false`.
 
 ### 3.7 Dashboard [added]
@@ -210,6 +214,9 @@ The server-side grace window (3.4) covers the compose preview.
 likelyread/
 ├── server/
 │   ├── app.py
+│   ├── cloud.py            # [added] Likelyread Cloud: accounts, tokens, billing
+│   ├── health.py           # [added] sender health
+│   ├── mcp_server.py       # [added] MCP endpoint for agents (/mcp)
 │   ├── dashboard/          # [added] static dashboard (index.html, app.js, style.css)
 │   ├── tests/
 │   ├── Dockerfile

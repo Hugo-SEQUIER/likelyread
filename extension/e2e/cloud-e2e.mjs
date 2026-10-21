@@ -208,19 +208,39 @@ try {
   });
   check("token unchanged", forged === stored.token);
 
-  // 7. Connect: instructions to paste to an AI agent; only the copy carries the token
+  // 7. Connect: an agent token made on request, MCP setup for Claude Code; only the copy carries the token
   await ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: CLOUD });
   await tab.bringToFront();
   await tab.click('[data-tab="connect"]');
-  await tab.waitForSelector(".agent-prompt", { timeout: 5000 });
+  await tab.waitForSelector(".client-picker", { timeout: 5000 });
   const token = await tab.evaluate(() => sessionStorage.getItem("likelyread.token"));
-  const shown = await tab.textContent(".agent-prompt");
-  check("agent instructions shown with the token masked", shown.includes("likelyread setup '") && !!token && !shown.includes(token));
+  const me = await (await fetch(`${CLOUD}/api/me`, { headers: { Authorization: `Bearer ${token}` } })).json();
+  check("no agent token is made when the page opens", me.agent_tokens === 0 && (await tab.isDisabled(".copy-row .btn")));
+  await tab.click("text=Create agent token");
+  await tab.waitForSelector("text=Created.", { timeout: 5000 });
+  await tab.click(".copy-row .btn");
+  await tab.waitForSelector("text=Copied. The token is in the copy", { timeout: 5000 }).catch(() => {});
+  const command = await tab.evaluate(() => navigator.clipboard.readText());
+  const m = command.match(/^claude mcp add --transport http --scope user likelyread (\S+) --header "Authorization: Bearer ([A-Za-z0-9_-]{30,})"$/);
+  const agentToken = m ? m[2] : "";
+  check("Claude Code command copied with the MCP address and a new token", !!m && m[1] === `${CLOUD}/mcp` && agentToken !== token, command.slice(0, 80));
+  const page = await tab.textContent("#view");
+  check("the tokens stay masked on screen", !!agentToken && !page.includes(agentToken) && !page.includes(token) && page.includes("Bearer ••••"));
+  const listed = await fetch(`${CLOUD}/mcp`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${agentToken}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  const tools = listed.ok ? (await listed.json()).result.tools.map((t) => t.name) : [];
+  check("its token lists the tools on /mcp", tools.includes("track_email") && tools.includes("get_email"), `${listed.status}`);
   await tab.click("text=Copy instructions");
   await tab.waitForSelector("text=Copied. Paste it to your agent.", { timeout: 5000 }).catch(() => {});
   const copied = await tab.evaluate(() => navigator.clipboard.readText());
-  check("copied instructions carry the setup link and the skill", copied.includes(`likelyread setup '${CLOUD}/#connect=${token}'`) && copied.includes("/skills/likelyread/SKILL.md"));
+  check("CLI instructions carry the agent token's setup link and the skill", copied.includes(`likelyread setup '${CLOUD}/#connect=${agentToken}'`) && copied.includes("/skills/likelyread/SKILL.md"));
   await shot(tab, "8-connect");
+  await tab.click('[data-tab="account"]');
+  await tab.waitForSelector("text=Revoke agent tokens (1)", { timeout: 5000 }).catch(() => {});
+  check("Account offers to revoke the agent token", await tab.isVisible("text=Revoke agent tokens (1)"));
 
   check("no console errors", errors.length === 0, errors.slice(0, 5).join(" | "));
 } catch (err) {
