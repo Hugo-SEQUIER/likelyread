@@ -33,7 +33,7 @@ Do not use it for emails the user sends by hand from Gmail in Chrome: the Likely
 
 ## Setup (once)
 
-**Over MCP (recommended, nothing to install):** the dashboard's **Connect** page gives the user the command for Claude Code and the configuration for Cursor, VS Code, Codex and other MCP clients, with a token made for agents. For Claude Code it looks like this (a self-hosted server uses its own address):
+**Over MCP (recommended, nothing to install):** the dashboard's **Connect** page gives the user the command for Claude Code, the configuration for Cursor, VS Code, Codex and other MCP clients, and a prompt for agents that set themselves up (such as Hermes), with a token made for agents. For Claude Code it looks like this (a self-hosted server uses its own address):
 
 ```bash
 claude mcp add --transport http likelyread https://app.likelyread.com/mcp --header "Authorization: Bearer TOKEN"

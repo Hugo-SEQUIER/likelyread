@@ -111,7 +111,7 @@ The dashboard is a static page with no data of its own: it reads the authenticat
 
 ## Email sent by AI agents and scripts
 
-**AI agents connect over MCP, with nothing to install.** Every Likelyread server, Cloud or your own, has an MCP endpoint at `/mcp`. Open the dashboard's **Connect** page and copy the setup for your agent: one command for Claude Code, a few lines of configuration for Cursor, VS Code, Codex and other MCP clients. For Claude Code:
+**AI agents connect over MCP, with nothing to install.** Every Likelyread server, Cloud or your own, has an MCP endpoint at `/mcp`. Open the dashboard's **Connect** page and copy the setup for your agent: one command for Claude Code, a few lines of configuration for Cursor, VS Code, Codex and other MCP clients, or a prompt that an agent such as Hermes follows to set itself up (add the server, install the skill, check the connection). The token is there on its own too, masked until you press **Show**. For Claude Code:
 
 ```bash
 claude mcp add --transport http --scope user likelyread https://app.likelyread.com/mcp --header "Authorization: Bearer <token>"

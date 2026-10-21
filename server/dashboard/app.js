@@ -464,6 +464,28 @@ function agentInstructions(link) {
   ].join("\n");
 }
 
+/** What a user pastes to an agent that can change its own settings, such as Hermes: it
+ * adds the MCP server itself, installs the skill and checks the connection. */
+function agentPrompt(url, auth) {
+  return [
+    "Connect yourself to Likelyread, which tracks whether the emails you send for me get opened. Do the setup yourself.",
+    "",
+    "1. Add Likelyread's MCP server to your own configuration so its tools are available to you:",
+    "   - name: likelyread",
+    `   - transport: streamable HTTP, URL ${url}`,
+    `   - header: Authorization: ${auth}`,
+    "   The token in that header is private. Keep it where your configuration stores secrets, and never print it, log it or put it in an email.",
+    "",
+    `2. Install the Likelyread skill from ${REPO_RAW}/skills/likelyread/SKILL.md and follow it whenever you send email for me.`,
+    "",
+    "3. Load the new tools, then check that you have these 11: account, new_pixel, text_to_html, track_email, list_emails, get_email, set_campaign, campaign_names, list_campaigns, get_stats, sender_health. If they only appear in a new session, tell me.",
+    "",
+    "4. Call account and tell me my plan. Track nothing until I ask: the skill says when to ask me first.",
+    "",
+    "5. Tell me which files you changed, without the token.",
+  ].join("\n");
+}
+
 /** How each MCP client adds Likelyread's server: streamable HTTP with the token in a header. */
 const MCP_CLIENTS = [
   { id: "claude", name: "Claude Code", where: "Run this in a terminal. The tools appear in your next Claude Code session, in every project.",
@@ -474,9 +496,33 @@ const MCP_CLIENTS = [
     text: (url, auth) => JSON.stringify({ servers: { likelyread: { type: "http", url, headers: { Authorization: auth } } } }, null, 2) },
   { id: "codex", name: "Codex", where: "Add this to ~/.codex/config.toml. The Codex CLI, IDE extension and app all read it.",
     text: (url, auth) => `[mcp_servers.likelyread]\nurl = "${url}"\nhttp_headers = { "Authorization" = "${auth}" }` },
+  { id: "agent", name: "Any agent", where: "Paste this to an agent that can change its own settings, such as Hermes. It adds the server, installs the skill and checks the connection.",
+    text: agentPrompt },
   { id: "other", name: "Other clients", where: "Most MCP clients take a streamable HTTP server: this address, with this Authorization header.",
     text: (url, auth) => JSON.stringify({ mcpServers: { likelyread: { type: "http", url, headers: { Authorization: auth } } } }, null, 2) },
 ];
+
+/** A secret in a masked field with Copy and Show, as the setup link and the agent token use. */
+function secretField(label, copyLabel) {
+  const field = h("input", { type: "password", readonly: true, "aria-label": label, class: "link-field" });
+  const msg = h("span", { class: "muted small", role: "status" });
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(field.value);
+      msg.textContent = "Copied.";
+    } catch {
+      field.type = "text";
+      field.select();
+      msg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
+    }
+  };
+  const row = h("div", { class: "inline-form" },
+    field,
+    h("button", { class: "btn", type: "button", onclick: copy }, copyLabel),
+    h("button", { class: "btn ghost", type: "button", onclick: () => { field.type = field.type === "password" ? "text" : "password"; } }, "Show"),
+    msg);
+  return { row, field, msg };
+}
 
 /** Copy text. When the clipboard is blocked, show it in place, selected, to copy by hand. */
 async function copyOrSelect(text, shownIn, msg, done) {
@@ -499,19 +545,12 @@ function viewConnect(root) {
   const mcpUrl = `${location.origin}/mcp`;
   const setupLink = (t) => `${location.origin}/#connect=${t}`;
 
-  const link = setupLink(state.token);
-  const field = h("input", { type: "password", value: link, readonly: true, "aria-label": "Setup link", class: "link-field" });
-  const msg = h("span", { class: "muted small" });
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(link);
-      msg.textContent = "Copied.";
-    } catch {
-      field.type = "text";
-      field.select();
-      msg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
-    }
-  };
+  const link = secretField("Setup link", "Copy link");
+  link.field.value = setupLink(state.token);
+  // The token on its own, for a client that asks for it alone.
+  const tokenBox = secretField(cloud ? "Agent token" : "Token", "Copy token");
+  tokenBox.row.classList.add("token-row");
+  tokenBox.row.prepend(h("span", { class: "token-label" }, cloud ? "Agent token" : "Token"));
 
   // On screen the token is masked; only what is copied carries it.
   const client = () => MCP_CLIENTS.find((c) => c.id === state.mcpClient) || MCP_CLIENTS[0];
@@ -527,6 +566,8 @@ function viewConnect(root) {
     copyOrSelect(agentInstructions(setupLink(token())), prompt, promptMsg, "Copied. Paste it to your agent.") }, "Copy instructions");
 
   const show = () => {
+    tokenBox.field.value = token() || "";
+    tokenBox.row.hidden = !token();
     const c = client();
     snippet.textContent = c.text(mcpUrl, `Bearer ${MASK}`);
     where.textContent = c.where;
@@ -547,7 +588,9 @@ function viewConnect(root) {
     try {
       const { data } = await api("/api/me/agent-token", { method: "POST" });
       state.agentToken = data.token;
-      createMsg.textContent = "Created. It is in what you copy below, never on screen, and only this page has it: copy what you need before you leave.";
+      tokenBox.field.type = "password";
+      tokenBox.msg.textContent = "";
+      createMsg.textContent = "Created. Only this page has it: copy the token or a setup below before you leave.";
       createButton.textContent = "Create another";
     } catch (err) {
       createMsg.textContent = err.message;
@@ -566,12 +609,13 @@ function viewConnect(root) {
     ),
     h("section", {},
       sectionHead("Connect your agent"),
-      h("p", { class: "muted agent-note" }, `Claude Code, Cursor, VS Code, Codex and other MCP clients, with nothing to install. Your agent gets Likelyread's tools and its rules: it asks before tracking a campaign, keeps a safe pace and reports opens honestly.`),
+      h("p", { class: "muted agent-note" }, `Claude Code, Cursor, VS Code, Codex and other MCP clients, with nothing to install, or any agent that sets itself up from a prompt, such as Hermes. Your agent gets Likelyread's tools and its rules: it asks before tracking a campaign, keeps a safe pace and reports opens honestly.`),
       cloud
         ? h("div", { class: "agent-token" },
             h("div", { class: "inline-form" }, createButton, createMsg),
             h("p", { class: "muted small agent-note" }, "An agent token tracks emails and reads results. It cannot change, export or delete your account, and stops working after 180 days unused. You can keep 5: a sixth replaces the oldest. Revoke them under Account."))
         : null,
+      tokenBox.row,
       picker,
       where,
       snippet,
@@ -584,11 +628,7 @@ function viewConnect(root) {
     ),
     h("section", {},
       sectionHead("Your setup link"),
-      h("div", { class: "inline-form" },
-        field,
-        h("button", { class: "btn", type: "button", onclick: copy }, "Copy link"),
-        h("button", { class: "btn ghost", type: "button", onclick: () => { field.type = field.type === "password" ? "text" : "password"; } }, "Show"),
-        msg),
+      link.row,
       h("ol", { class: "connect-steps two" },
         cloud
           ? step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension and click Sign in with Google in its settings. Then write an email in Gmail: the red eye next to Send means it is tracked."))

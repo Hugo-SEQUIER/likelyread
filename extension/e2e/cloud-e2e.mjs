@@ -233,6 +233,20 @@ try {
   });
   const tools = listed.ok ? (await listed.json()).result.tools.map((t) => t.name) : [];
   check("its token lists the tools on /mcp", tools.includes("track_email") && tools.includes("get_email"), `${listed.status}`);
+  const tokenInput = tab.locator('.token-row input');
+  check("the agent token field is masked until Show", (await tokenInput.getAttribute("type")) === "password" && (await tokenInput.inputValue()) === agentToken);
+  await tab.click(".token-row >> text=Copy token");
+  check("Copy token copies the token alone", (await tab.evaluate(() => navigator.clipboard.readText())) === agentToken);
+  await tab.click(".token-row >> text=Show");
+  check("Show reveals the agent token", (await tokenInput.getAttribute("type")) === "text");
+  await tab.click(".token-row >> text=Show");
+  await tab.click('.client-picker button:has-text("Any agent")');
+  await tab.click(".copy-row .btn");
+  const agentPromptText = await tab.evaluate(() => navigator.clipboard.readText());
+  check("the Any agent prompt carries the address, the token and the skill",
+    agentPromptText.includes(`URL ${CLOUD}/mcp`) && agentPromptText.includes(`Authorization: Bearer ${agentToken}`)
+      && agentPromptText.includes("/skills/likelyread/SKILL.md") && agentPromptText.includes("Track nothing until I ask"));
+  check("the prompt stays masked on screen", !(await tab.textContent("#view")).includes(agentToken));
   await tab.click("text=Copy instructions");
   await tab.waitForSelector("text=Copied. Paste it to your agent.", { timeout: 5000 }).catch(() => {});
   const copied = await tab.evaluate(() => navigator.clipboard.readText());
