@@ -181,6 +181,8 @@ tr.dimrow td { color: var(--muted); }
 .client-picker button:hover, .client-picker button[aria-pressed="true"] { color: var(--ink); background: var(--surface); }
 .client-where { margin-top: 14px; max-width: 70ch; }
 .copy-row { margin-top: 6px; }
+.token-row { margin-top: 18px; }
+.token-label { font-weight: 500; margin-right: 6px; }
 @media (max-width: 900px) { .connect-steps.two { grid-template-columns: 1fr; } }
 
 /* cloud: plans and upsells */
