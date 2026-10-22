@@ -1,0 +1,14 @@
+{
+  "name": "likelyread",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "e2e": "^0.21.2",
+    "@e2e-dev/web": "^0.15.2",
+    "ai": "^7.0.0",
+    "zod": "^4.1.8"
+  },
+  "scripts": {
+    "test:e2e": "e2e run"
+  }
+}

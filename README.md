@@ -221,6 +221,9 @@ npm run build     # outputs dist/
 # end to end: real Chromium with the built extension, a fake Gmail on
 # mail.google.com and a real server (send, campaign, sender, server down, bad token)
 CHROME_PATH=/path/to/chrome PYTHON=../server/.venv/bin/python npm run e2e
+# the built extension as Chrome lists it (name and version), with the e2e package:
+# tests/extension-listing.e2e.ts and e2e.config.ts at the repository root
+cd .. && npm install && npx e2e run tests/extension-listing.e2e.ts
 
 # agent CLI
 cd cli

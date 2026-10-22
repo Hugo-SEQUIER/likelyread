@@ -4,7 +4,7 @@ Everything to paste into the [Chrome Web Store developer dashboard](https://chro
 
 ## Before you upload
 
-1. `cd extension && npm ci && npm test && npm run build`, then zip the **contents** of `dist/` (the manifest must be at the root of the zip, not in a folder).
+1. `cd extension && npm ci && npm test && npm run build`, then zip the **contents** of `dist/` (the manifest must be at the root of the zip, not in a folder). From the repository root, `npm install && npx e2e run tests/extension-listing.e2e.ts` checks that Chrome lists the build under the name and version the manifest declares.
 2. Every new upload needs a higher `version` in `extension/manifest.json` and `extension/package.json`.
 3. The privacy policy URL below must be live: `public/privacy.html` in the `likelyread-site` repo, served at `https://likelyread.com/privacy`.
 4. Likelyread Cloud must be live at `https://app.likelyread.com` (reviewers sign in with Google there). The self-hosted reviewer server is the fallback.
