@@ -75,6 +75,9 @@ class Settings:
         self.suppress_window_seconds = _env_float("SUPPRESS_WINDOW_SECONDS", 60)
         self.store_ip = _env_bool("STORE_IP", True)
         self.retention_days = _env_float("RETENTION_DAYS", 0)
+        # Full IP addresses are personal data and only useful while a hit is fresh:
+        # after this many days they are cut to their network (/24, /48). 0 keeps them.
+        self.ip_days = _env_float("IP_DAYS", 30)
         self.allowed_origins = [
             o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()
         ]
@@ -288,28 +291,40 @@ def classify_hit(ts: float, ua: str | None, sent_at: float | None, suppressions:
     return explain_hit(ts, ua, sent_at, suppressions, cfg)[0]
 
 
-def _is_google_ip(ip: str | None) -> bool:
+def _parse_addr(ip: str | None):
+    """An address, or the first address of a shortened one ("203.0.113.0/24").
+    IPv4-mapped IPv6 addresses come back as IPv4. None when not an address."""
     if not ip:
-        return False
+        return None
     try:
-        addr = ipaddress.ip_address(ip)
+        addr = ipaddress.ip_network(ip, strict=False).network_address if "/" in ip else ipaddress.ip_address(ip)
     except ValueError:
-        return False
+        return None
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
         addr = addr.ipv4_mapped
-    return any(addr in net for net in GOOGLE_PROXY_NETS)
+    return addr
+
+
+def shorten_ip(ip: str | None) -> str | None:
+    """The /24 (IPv4) or /48 (IPv6) network an address belongs to, which still
+    says which network loaded the image but no longer points at one device."""
+    addr = _parse_addr(ip)
+    if addr is None:
+        return None
+    prefix = 24 if addr.version == 4 else 48
+    return str(ipaddress.ip_network(f"{addr}/{prefix}", strict=False))
+
+
+def _is_google_ip(ip: str | None) -> bool:
+    addr = _parse_addr(ip)
+    return addr is not None and any(addr in net for net in GOOGLE_PROXY_NETS)
 
 
 def network_of(ip: str | None) -> str | None:
     """apple, google or other for a valid address; None when unknown."""
-    if not ip:
+    addr = _parse_addr(ip)
+    if addr is None:
         return None
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return None
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
-        addr = addr.ipv4_mapped
     if any(addr in n for n in APPLE_NETS):
         return "apple"
     if any(addr in n for n in GOOGLE_PROXY_NETS):
@@ -620,7 +635,34 @@ def purge_old(db: DB, cfg: Settings, now: float | None = None) -> int:
         db.execute("DELETE FROM suppressions WHERE ts < ?", (cutoff,))
         # Subjects and recipients are personal data too.
         db.execute("DELETE FROM emails WHERE sent_at < ?", (cutoff,))
+    if cfg.ip_days > 0:
+        shorten_old_ips(db, now - cfg.ip_days * 86400)
     return n
+
+
+def shorten_old_ips(db: DB, cutoff: float) -> int:
+    """Cut the IP of every hit older than cutoff to its network. The verdict does
+    not change: it reads the stored network, which is filled in first for hits
+    stored before that column existed. Returns the number of hits shortened."""
+    done = 0
+    while True:
+        rows = db.query(
+            "SELECT id, ip, net FROM hits WHERE ts < ? AND ip IS NOT NULL AND instr(ip, '/') = 0 LIMIT 500",
+            (cutoff,),
+        )
+        if not rows:
+            return done
+        with db.lock:
+            db.conn.execute("BEGIN")
+            try:
+                for r in rows:
+                    net = r["net"] or network_of(r["ip"])
+                    db.conn.execute("UPDATE hits SET ip = ?, net = ? WHERE id = ?", (shorten_ip(r["ip"]), net, r["id"]))
+                db.conn.execute("COMMIT")
+            except Exception:
+                db.conn.execute("ROLLBACK")
+                raise
+        done += len(rows)
 
 
 class Api:

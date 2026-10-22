@@ -62,6 +62,7 @@ It tells you when someone opens an email you sent, with no third-party SaaS invo
 | `GRACE_SECONDS` | `20` | Hits within this window around send time count as self (compose preview). |
 | `SUPPRESS_WINDOW_SECONDS` | `60` | Hits within this window after a suppress ping count as self. |
 | `STORE_IP` | `true` | Set `false` to drop IPs (privacy mode). |
+| `IP_DAYS` | `30` | **[new]** Hits older than this keep only the network of their IP (`203.0.113.0/24`, `2001:db8:1::/48`), shortened by the daily purge. The stored network (`apple`, `google`, `other`) is filled in first, so verdicts do not change. `0` keeps full IPs. |
 | `RETENTION_DAYS` | `0` | `0` keeps data forever; otherwise hits older than this (and emails sent before the cutoff) are purged daily. Hits for never-registered ids are always purged after 8 days, since registration retries stop after 7. |
 | `ALLOWED_ORIGINS` | empty | Comma-separated CORS origins for `/api/*` (the extension origin). |
 | `PIXEL_RATE_PER_MIN` | `60` | **[added]** Pixel hits logged per IP per minute; extra requests still get the GIF. |
@@ -268,7 +269,7 @@ Requirements: any 512 MB VPS works, since the server is a single process.
 ## 7. Privacy & legal
 
 - All data stays on the user's VPS. Nothing is sent anywhere else.
-- `STORE_IP=false` and `RETENTION_DAYS` let the user minimise stored data.
+- Full IPs are kept only `IP_DAYS` (30 by default), then shortened to their network. `STORE_IP=false` and `RETENTION_DAYS` let the user keep even less.
 - The README warns that tracking pixels can fall under the EU ePrivacy rules and GDPR (CNIL guidance on email tracking), and that users are responsible for their own use.
 
 ---

@@ -500,6 +500,67 @@ def test_retention_also_drops_old_email_metadata(env, clock):
     assert {e["id"] for e in c.get("/api/emails", headers=AUTH).json()} == {fresh}
 
 
+def _ips(c):
+    return [r["ip"] for r in c.app.state.db.query("SELECT ip FROM hits ORDER BY ts")]
+
+
+@pytest.mark.parametrize(
+    "ip, short",
+    [
+        ("203.0.113.77", "203.0.113.0/24"),
+        ("2001:db8:1234:5678::1", "2001:db8:1234::/48"),
+        ("::ffff:198.51.100.9", "198.51.100.0/24"),
+    ],
+)
+def test_ip_is_shortened_after_ip_days(env, clock, ip, short):
+    c = TestClient(likelyread.create_app(), client=(ip, 40000))
+    eid = new_id()
+    register(c, eid)
+    hit(c, eid)
+    clock["now"] += 29 * 86400
+    likelyread.purge_old(c.app.state.db, c.app.state.cfg)
+    assert _ips(c) == [ip], "kept in full for 30 days by default"
+    clock["now"] += 2 * 86400
+    likelyread.purge_old(c.app.state.db, c.app.state.cfg)
+    assert _ips(c) == [short]
+    likelyread.purge_old(c.app.state.db, c.app.state.cfg)
+    assert _ips(c) == [short], "shortening twice changes nothing"
+
+
+def test_ip_days_zero_keeps_full_ips(env, clock):
+    env.setenv("IP_DAYS", "0")
+    c = TestClient(likelyread.create_app(), client=("203.0.113.77", 40000))
+    eid = new_id()
+    hit(c, eid)
+    register(c, eid)
+    clock["now"] += 400 * 86400
+    likelyread.purge_old(c.app.state.db, c.app.state.cfg)
+    assert _ips(c) == ["203.0.113.77"]
+
+
+def test_verdicts_survive_ip_shortening(env, clock):
+    """Shortening keeps the verdict: the network is already stored, and old hits
+    without one (stored before 0.4) get it filled in before their IP is cut."""
+    gmail_ua = "Mozilla/5.0 (Windows NT 10.0)"
+    cases = [("17.58.100.1", APPLE_UA, "prefetch", "direct"), ("66.249.84.1", gmail_ua, "open", "gmail_proxy"), ("203.0.113.7", APPLE_UA, "open", "direct")]
+    ids = []
+    for ip, ua, _, _ in cases:
+        c = TestClient(likelyread.create_app(), client=(ip, 40000))
+        eid = new_id()
+        register(c, eid)
+        clock["now"] += 600
+        hit(c, eid, ua=ua)
+        ids.append(eid)
+    db = c.app.state.db
+    db.execute("UPDATE hits SET net = NULL")  # as stored before the net column existed
+    clock["now"] += 31 * 86400
+    likelyread.purge_old(db, c.app.state.cfg)
+    assert all("/" in ip for ip in _ips(c))
+    for eid, (_, _, kind, via) in zip(ids, cases):
+        h = c.get(f"/api/emails/{eid}", headers=AUTH).json()["hits"][0]
+        assert (h["kind"], h["via"]) == (kind, via), h
+
+
 def test_rate_limiter_never_resets_live_counters():
     rl = likelyread.RateLimiter(2)
     rl.MAX_KEYS = 3
