@@ -4,7 +4,7 @@ Everything to paste into the [Chrome Web Store developer dashboard](https://chro
 
 ## Before you upload
 
-1. `cd extension && npm ci && npm test && npm run build`, then zip the **contents** of `dist/` (the manifest must be at the root of the zip, not in a folder).
+1. `cd extension && npm ci && npm test && npm run build`, then zip the **contents** of `dist/` (the manifest must be at the root of the zip, not in a folder). From the repository root, `npm install && npx e2e run tests/extension-listing.e2e.ts` checks that Chrome lists the build under the name and version the manifest declares.
 2. Every new upload needs a higher `version` in `extension/manifest.json` and `extension/package.json`.
 3. The privacy policy URL below must be live: `public/privacy.html` in the `likelyread-site` repo, served at `https://likelyread.com/privacy`.
 4. Likelyread Cloud must be live at `https://app.likelyread.com` (reviewers sign in with Google there). The self-hosted reviewer server is the fallback.
@@ -13,7 +13,7 @@ Everything to paste into the [Chrome Web Store developer dashboard](https://chro
 
 Upload the zip. Name, summary, version and icons come from the manifest:
 
-- **Name:** Likelyread: email open tracking for Gmail™ (42 characters, limit 75)
+- **Name:** LikelyRead (10 characters, limit 75)
 - **Summary:** See when the emails you send from Gmail™ are opened. Free with a Google sign-in, or self-host it on your own server. (116 characters, limit 132)
 - **Icon:** `icons/128.png`, 96×96 artwork with 16 px transparent padding.
 
