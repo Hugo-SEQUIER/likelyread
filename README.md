@@ -42,7 +42,7 @@ Treat it like a password. You can print it again any time with `sudo bash /opt/l
 
 **3. Connect the extension.** Install the Chrome extension, open its settings, paste the setup link and click **Save**. Write an email in Gmail: the red eye next to Send means it is tracked.
 
-Until the extension is on the Chrome Web Store (submission kit: [`store/LISTING.md`](store/LISTING.md)), build and load it yourself: `cd extension && npm install && npm run build`, then in `chrome://extensions` turn on **Developer mode**, click **Load unpacked** and pick `extension/dist`.
+Get the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/likelyread-email-open-tra/gbpbnkffdkbjgjnmgdlicbpgpaompmdd). To run your own build instead: `cd extension && npm install && npm run build`, then in `chrome://extensions` turn on **Developer mode**, click **Load unpacked** and pick `extension/dist`.
 
 **4. Open the dashboard.** Open the setup link in your browser: it signs you in.
 

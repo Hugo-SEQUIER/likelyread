@@ -631,8 +631,8 @@ function viewConnect(root) {
       link.row,
       h("ol", { class: "connect-steps two" },
         cloud
-          ? step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension and click Sign in with Google in its settings. Then write an email in Gmail: the red eye next to Send means it is tracked."))
-          : step("1", "Chrome extension", h("p", {}, "Install the Likelyread extension, open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
+          ? step("1", "Chrome extension", h("p", {}, h("a", { href: STORE_URL, target: "_blank", rel: "noopener" }, "Install the Likelyread extension"), " and click Sign in with Google in its settings. Then write an email in Gmail: the red eye next to Send means it is tracked."))
+          : step("1", "Chrome extension", h("p", {}, h("a", { href: STORE_URL, target: "_blank", rel: "noopener" }, "Install the Likelyread extension"), ", open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
         step("2", "Another browser", h("p", {}, "Open the setup link there to sign in to this dashboard."))),
     ),
   );
@@ -822,12 +822,14 @@ function senderCard(r) {
   );
 }
 
+const STORE_URL = "https://chromewebstore.google.com/detail/likelyread-email-open-tra/gbpbnkffdkbjgjnmgdlicbpgpaompmdd";
+
 function emptyState() {
   return h("section", { class: "headline" },
     h("h1", {}, "Nothing tracked", h("br"), h("span", { class: "rate" }, "yet")),
     h("p", {}, isCloud()
-      ? "Install the Likelyread Chrome extension and click Sign in with Google in its settings, then send an email from Gmail with the red eye on."
-      : "Install the Likelyread Chrome extension and paste your setup link in its settings (see Connect), then send an email from Gmail with the red eye on."));
+      ? [h("a", { href: STORE_URL, target: "_blank", rel: "noopener" }, "Install the Likelyread Chrome extension"), " and click Sign in with Google in its settings, then send an email from Gmail with the red eye on."]
+      : [h("a", { href: STORE_URL, target: "_blank", rel: "noopener" }, "Install the Likelyread Chrome extension"), " and paste your setup link in its settings (see Connect), then send an email from Gmail with the red eye on."]));
 }
 
 // ---------------------------------------------------------------- router
