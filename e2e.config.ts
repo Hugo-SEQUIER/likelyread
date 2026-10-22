@@ -11,6 +11,8 @@ const CDP_PORT = 9333;
 const cdp = () => `http://127.0.0.1:${CDP_PORT}`;
 
 export default {
+  // tests/cloud runs against a local Likelyread Cloud instead: e2e.cloud.config.ts.
+  tests: ['tests/**/*.e2e.ts', '!tests/cloud/**'],
   // The Vercel AI Gateway serves the model id and reads AI_GATEWAY_API_KEY, or the OIDC token of a linked Vercel project.
   // Only agent.* steps need it; the current tests are deterministic.
   agents: {

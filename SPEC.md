@@ -112,6 +112,8 @@ suppressions(
 | `POST` | `/mcp` | bearer | **[added]** MCP endpoint for AI agents: streamable HTTP, stateless, plain JSON answers (the server never pushes). Same token, plans and limits as `/api/*`, through the same code. Tools: `account`, `new_pixel`, `text_to_html`, `track_email`, `list_emails`, `get_email`, `set_campaign`, `campaign_names`, `list_campaigns`, `get_stats`, `sender_health`; the server's instructions carry the agent skill's rules. |
 | `GET` | `/healthz` | public | Liveness check. |
 
+**[added]** Likelyread Cloud (`MODE=cloud`, [docs/CLOUD.md](docs/CLOUD.md)) adds Google sign-in, billing and, for apps such as Claude and ChatGPT that connect to `/mcp` with a sign-in instead of a token, an OAuth 2.1 authorization server: `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/consent`, `/oauth/token` and `/oauth/revoke`. A self-hosted server has none of these and answers them 404.
+
 Pixel response headers: `Cache-Control: no-store, no-cache, must-revalidate, private, max-age=0`, `Pragma: no-cache`, `Expires: 0`.
 
 CORS: `/api/*` allows only the extension origin (`chrome-extension://<id>`, configured through `ALLOWED_ORIGINS`). OpenAPI and docs endpoints are disabled.
@@ -147,7 +149,7 @@ Classification is computed at read time so the rules can be improved later witho
 - Rate-limit `/p/*` per IP (`PIXEL_RATE_PER_MIN`, default 60/min) so the log can't be flooded. Done in the server because stock Caddy has no rate limiter. Over-limit requests still get the GIF but are not logged.
 - Caddy overwrites `X-Forwarded-For` with the real client address, and the server only trusts that header from private (Docker) addresses (`FORWARDED_ALLOW_IPS`), so stored IPs and rate-limit keys can't be spoofed.
 - `__none__` is reserved as the "uncategorized" filter value and can't be used as a campaign name.
-- **[added]** `/mcp` refuses a request whose `Origin` header is not the server's own address (403, against DNS rebinding, as the MCP spec requires), then checks the bearer token exactly as `/api/*` does (401 with `WWW-Authenticate: Bearer`).
+- **[added]** `/mcp` refuses a request whose `Origin` header is not the server's own address (403, against DNS rebinding, as the MCP spec requires), then checks the bearer token exactly as `/api/*` does (401 with `WWW-Authenticate: Bearer`). **[added]** On Likelyread Cloud, `/mcp` also takes the access tokens apps get by signing in, which work nowhere else, and its 401 names the OAuth metadata (`WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`, with `error="invalid_token"` when a token was sent).
 - **[added]** Agents never receive a hit's user agent or IP: whoever loads the pixel chooses the user agent, so it could carry instructions. `get_email` returns each hit's time, kind, via and reason (the server's own words), and the CLI's `show` does the same unless given `--full`.
 - **[changed]** The dashboard is a static page that holds no data. Everything it shows comes from the authenticated API, so it needs the same token. It is served with a strict CSP and can be turned off with `DASHBOARD=false`.
 
@@ -218,6 +220,7 @@ likelyread/
 │   ├── cloud.py            # [added] Likelyread Cloud: accounts, tokens, billing
 │   ├── health.py           # [added] sender health
 │   ├── mcp_server.py       # [added] MCP endpoint for agents (/mcp)
+│   ├── oauth.py            # [added] Likelyread Cloud: OAuth sign-in for apps that connect to /mcp
 │   ├── dashboard/          # [added] static dashboard (index.html, app.js, style.css)
 │   ├── tests/
 │   ├── Dockerfile

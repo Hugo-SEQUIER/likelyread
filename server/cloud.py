@@ -49,6 +49,28 @@ CREATE TABLE IF NOT EXISTS tokens (
   last_used   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_tokens_account ON tokens(account_id);
+CREATE TABLE IF NOT EXISTS apps (
+  id            TEXT PRIMARY KEY,   -- one per app connection the user approved (oauth.py)
+  account_id    TEXT NOT NULL,
+  client_id     TEXT NOT NULL,      -- the app's client metadata document, an https URL
+  name          TEXT NOT NULL,      -- the name that document gives
+  access        TEXT UNIQUE,        -- sha256 of the current access token, which works at /mcp only
+  access_until  REAL NOT NULL,
+  refresh       TEXT UNIQUE,        -- sha256 of the current refresh token
+  refresh_prev  TEXT UNIQUE,        -- sha256 of the last one spent, in case its answer was lost
+  created_at    REAL NOT NULL,
+  last_used     REAL NOT NULL       -- when the app last got a token
+);
+CREATE INDEX IF NOT EXISTS idx_apps_account ON apps(account_id);
+CREATE TABLE IF NOT EXISTS app_codes (
+  hash          TEXT PRIMARY KEY,   -- sha256 of an authorization code, redeemed once
+  account_id    TEXT NOT NULL,
+  client_id     TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  redirect_uri  TEXT NOT NULL,
+  challenge     TEXT NOT NULL,      -- PKCE S256 challenge
+  expires_at    REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS webhook_events (
   id           TEXT PRIMARY KEY,
   received_at  REAL NOT NULL
@@ -72,6 +94,12 @@ MAX_AGENT_TOKENS = 5
 TOKEN_IDLE_SECONDS = 180 * 86400
 # Dashboard tokens live in the browser's localStorage, so they lapse sooner.
 DASHBOARD_TOKEN_IDLE_SECONDS = 30 * 86400
+# Apps connected with a sign-in (oauth.py), such as Claude and ChatGPT: an access token
+# works at /mcp only, for an hour, and the app renews it with its refresh token. A
+# connection that gets no new token for TOKEN_IDLE_SECONDS ends. Connections are a pool
+# of their own: an eleventh replaces the least recently used, never an agent token.
+APP_ACCESS_SECONDS = 3600
+MAX_APPS = 10
 # Fallback paid period when a subscription event carries no readable period end.
 DEFAULT_PERIOD_SECONDS = 32 * 86400
 GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
@@ -179,11 +207,20 @@ class CheckoutIn(BaseModel):
     plan: str
 
 
+def person(p: Principal) -> None:
+    """Account actions need a sign-in. An agent token tracks and reads results only, so
+    an agent misled by what it reads cannot delete or export anything."""
+    if p.agent:
+        raise HTTPException(status_code=403, detail="not with an agent token: sign in to the dashboard for this")
+
+
 class Cloud:
     def __init__(self, db: DB, cfg: CloudSettings) -> None:
         self.db = db
         self.cfg = cfg
         self.http: Callable[[str, str, dict, bytes | None], tuple[int, dict]] = http_json
+        # oauth.OAuth, set by app.py: an app's sign-in continues there after Google.
+        self.oauth: Any = None
         with db.lock:
             db.conn.executescript(SCHEMA)
             # Databases created before Stripe billing lack its two columns.
@@ -258,6 +295,77 @@ class Cloud:
             )
         return token
 
+    # ---- apps connected with a sign-in (oauth.py) ------------------------
+
+    @staticmethod
+    def _grant(access: str, refresh: str) -> dict:
+        return {"access_token": access, "token_type": "Bearer", "expires_in": APP_ACCESS_SECONDS, "refresh_token": refresh}
+
+    def connect_app(self, account_id: str, client_id: str, name: str) -> dict:
+        """A connection for an app the user approved, and its first tokens. Only the
+        hashes are kept."""
+        access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        now = time.time()
+        with self.db.lock:
+            self.db.conn.execute(
+                "INSERT INTO apps(id, account_id, client_id, name, access, access_until, refresh, created_at, last_used) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), account_id, client_id, name, token_hash(access), now + APP_ACCESS_SECONDS,
+                 token_hash(refresh), now, now),
+            )
+            self.db.conn.execute(
+                "DELETE FROM apps WHERE account_id = ? AND id NOT IN "
+                "(SELECT id FROM apps WHERE account_id = ? ORDER BY last_used DESC, rowid DESC LIMIT ?)",
+                (account_id, account_id, MAX_APPS),
+            )
+        return self._grant(access, refresh)
+
+    def refresh_app(self, refresh: str, client_id: str) -> dict | None:
+        """New tokens for a connection, for its refresh token. Each refresh token is
+        spent once, except that the last one spent keeps working until the app uses the
+        one that replaced it: an app that lost an answer can still refresh. None when
+        the token is unknown, belongs to another app or the connection has lapsed."""
+        spent = token_hash(refresh)
+        now = time.time()
+        with self.db.lock:
+            row = self.db.conn.execute(
+                "SELECT id, client_id, last_used FROM apps WHERE refresh = ? OR refresh_prev = ?", (spent, spent)
+            ).fetchone()
+            if row is None or row["client_id"] != client_id:
+                return None
+            if row["last_used"] < now - TOKEN_IDLE_SECONDS:
+                self.db.conn.execute("DELETE FROM apps WHERE id = ?", (row["id"],))
+                return None
+            access, new = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+            self.db.conn.execute(
+                "UPDATE apps SET access = ?, access_until = ?, refresh = ?, refresh_prev = ?, last_used = ? WHERE id = ?",
+                (token_hash(access), now + APP_ACCESS_SECONDS, token_hash(new), spent, now, row["id"]),
+            )
+        return self._grant(access, new)
+
+    def authenticate_app(self, token: str) -> Principal | None:
+        """An app's access token, at /mcp. It can do what an agent token does: track
+        emails and read results, never account actions."""
+        rows = self.db.query(
+            "SELECT p.access_until, a.* FROM apps p JOIN accounts a ON a.id = p.account_id WHERE p.access = ?",
+            (token_hash(token),),
+        )
+        if not rows or rows[0]["access_until"] <= time.time():
+            return None
+        row = rows[0]
+        return Principal(account_id=row["id"], plan=self.effective_plan(row), email=row["email"], agent=True)
+
+    def apps_of(self, account_id: str) -> list[dict]:
+        rows = self.db.query(
+            "SELECT id, client_id, name, created_at, last_used FROM apps WHERE account_id = ? ORDER BY last_used DESC",
+            (account_id,),
+        )
+        return [
+            {"id": r["id"], "name": r["name"], "site": urllib.parse.urlsplit(r["client_id"]).hostname,
+             "created_at": r["created_at"], "last_used": r["last_used"]}
+            for r in rows
+        ]
+
     def account(self, account_id: str) -> Any:
         rows = self.db.query("SELECT * FROM accounts WHERE id = ?", (account_id,))
         return rows[0] if rows else None
@@ -286,6 +394,7 @@ class Cloud:
         agents = self.db.query(
             "SELECT COUNT(*) AS n FROM tokens WHERE account_id = ? AND label = ?", (row["id"], AGENT_LABEL)
         )[0]["n"]
+        apps = self.db.query("SELECT COUNT(*) AS n FROM apps WHERE account_id = ?", (row["id"],))[0]["n"]
         return {
             "mode": "cloud",
             "email": row["email"],
@@ -300,6 +409,7 @@ class Cloud:
             "lifetime_left": self.lifetime_left(),
             "admin": row["email"] in self.cfg.admin_emails,
             "agent_tokens": agents,
+            "apps": apps,
         }
 
     def delete_account(self, account_id: str) -> None:
@@ -313,16 +423,21 @@ class Cloud:
             c.execute("DELETE FROM suppressions WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM emails WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM tokens WHERE account_id = ?", (account_id,))
+            c.execute("DELETE FROM apps WHERE account_id = ?", (account_id,))
+            c.execute("DELETE FROM app_codes WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
             c.execute("INSERT OR REPLACE INTO deleted_accounts(id, deleted_at) VALUES (?, ?)", (account_id, time.time()))
 
     def purge(self, now: float | None = None) -> None:
-        """Daily: forget old webhook ids and idle tokens."""
+        """Daily: forget old webhook ids, idle tokens, lapsed app connections and
+        authorization codes nobody redeemed."""
         now = time.time() if now is None else now
         self.db.execute("DELETE FROM webhook_events WHERE received_at < ?", (now - 30 * 86400,))
         self.db.execute(
             "DELETE FROM tokens WHERE COALESCE(last_used, created_at) < ?", (now - TOKEN_IDLE_SECONDS,)
         )
+        self.db.execute("DELETE FROM apps WHERE last_used < ?", (now - TOKEN_IDLE_SECONDS,))
+        self.db.execute("DELETE FROM app_codes WHERE expires_at < ?", (now,))
         self.db.execute(
             "DELETE FROM tokens WHERE label = 'Dashboard' AND COALESCE(last_used, created_at) < ?",
             (now - DASHBOARD_TOKEN_IDLE_SECONDS,),
@@ -525,47 +640,55 @@ class Cloud:
             return f"status {status}"
         return "ignored"
 
+    def google_redirect(self, ext: str = "", app: dict | None = None) -> RedirectResponse:
+        """Send the browser to Google's sign-in. ext is the Chrome extension that started
+        it; app is an app's checked authorization request (oauth.py), which goes on to
+        the consent page after sign-in."""
+        cfg = self.cfg
+        state = secrets.token_urlsafe(24)
+        verifier = secrets.token_urlsafe(48)
+        challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+        params = urllib.parse.urlencode(
+            {
+                "client_id": cfg.google_client_id,
+                "redirect_uri": cfg.redirect_uri,
+                "response_type": "code",
+                "scope": "openid email",
+                "state": state,
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "prompt": "select_account",
+            }
+        )
+        resp = RedirectResponse(f"{cfg.google_auth_url}?{params}", status_code=302)
+        saved: dict[str, Any] = {"state": state, "verifier": verifier, "ext": ext, "exp": time.time() + 600}
+        if app is not None:
+            saved["app"] = app
+        secure = cfg.public_url.startswith("https://")
+        resp.set_cookie("lr_oauth", self._sign(saved), max_age=600, httponly=True, secure=secure, samesite="lax", path="/auth")
+        return resp
+
     # ---- routes ----------------------------------------------------------
 
     def register_routes(self, app: FastAPI, principal: Callable[..., Principal]) -> None:
         cfg = self.cfg
-        secure = cfg.public_url.startswith("https://")
-
-        def person(p: Principal) -> None:
-            """Account actions need a sign-in. An agent token tracks and reads results
-            only, so an agent misled by what it reads cannot delete or export anything."""
-            if p.agent:
-                raise HTTPException(status_code=403, detail="not with an agent token: sign in to the dashboard for this")
 
         @app.get("/auth/google")
         def google_start(ext: str = ""):
             # ext is the Chrome extension's id when the extension started the sign-in.
-            ext = ext if ext in cfg.extension_ids else ""
-            state = secrets.token_urlsafe(24)
-            verifier = secrets.token_urlsafe(48)
-            challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
-            params = urllib.parse.urlencode(
-                {
-                    "client_id": cfg.google_client_id,
-                    "redirect_uri": cfg.redirect_uri,
-                    "response_type": "code",
-                    "scope": "openid email",
-                    "state": state,
-                    "code_challenge": challenge,
-                    "code_challenge_method": "S256",
-                    "prompt": "select_account",
-                }
-            )
-            resp = RedirectResponse(f"{cfg.google_auth_url}?{params}", status_code=302)
-            cookie = self._sign({"state": state, "verifier": verifier, "ext": ext, "exp": time.time() + 600})
-            resp.set_cookie("lr_oauth", cookie, max_age=600, httponly=True, secure=secure, samesite="lax", path="/auth")
-            return resp
+            return self.google_redirect(ext if ext in cfg.extension_ids else "")
 
         @app.get("/auth/google/callback")
         def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
-            fail = RedirectResponse(f"{cfg.public_url}/?signin=failed", status_code=303)
-            fail.delete_cookie("lr_oauth", path="/auth")
             saved = self._unsign(request.cookies.get("lr_oauth", ""))
+            # An app's sign-in (oauth.py) goes back to the app, even when it fails.
+            app_request = saved.get("app") if saved and self.oauth is not None else None
+            fail = (
+                self.oauth.after_sign_in(app_request, None)
+                if app_request
+                else RedirectResponse(f"{cfg.public_url}/?signin=failed", status_code=303)
+            )
+            fail.delete_cookie("lr_oauth", path="/auth")
             if error or not code or not saved or not hmac.compare_digest(str(saved.get("state", "")), state):
                 return fail
             try:
@@ -574,6 +697,10 @@ class Cloud:
                 print(f"google sign-in failed: {exc}")
                 return fail
             acct = self.upsert_google_account(sub, email)
+            if app_request:
+                resp = self.oauth.after_sign_in(app_request, (acct, email.strip().lower()))
+                resp.delete_cookie("lr_oauth", path="/auth")
+                return resp
             ext = str(saved.get("ext") or "")
             ext = ext if ext in cfg.extension_ids else ""
             token = self.create_token(acct, "Chrome extension" if ext else "Dashboard")
@@ -629,7 +756,22 @@ class Cloud:
         def signout_all(p: Principal = Depends(principal)):
             person(p)
             n = self.db.execute("DELETE FROM tokens WHERE account_id = ?", (p.account_id,)).rowcount
+            n += self.db.execute("DELETE FROM apps WHERE account_id = ?", (p.account_id,)).rowcount
             return {"ok": True, "revoked": n}
+
+        @app.get("/api/me/apps")
+        def my_apps(p: Principal = Depends(principal)):
+            """Apps connected with a sign-in, such as Claude and ChatGPT, last used first."""
+            person(p)
+            return self.apps_of(p.account_id or "")
+
+        @app.delete("/api/me/apps/{app_id}")
+        def disconnect_app(app_id: str, p: Principal = Depends(principal)):
+            person(p)
+            n = self.db.execute("DELETE FROM apps WHERE id = ? AND account_id = ?", (app_id, p.account_id)).rowcount
+            if not n:
+                raise HTTPException(status_code=404, detail="not found")
+            return {"ok": True}
 
         @app.post("/api/me/agent-token")
         def agent_token(p: Principal = Depends(principal)):
