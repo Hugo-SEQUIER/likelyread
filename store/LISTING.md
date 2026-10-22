@@ -13,7 +13,7 @@ Everything to paste into the [Chrome Web Store developer dashboard](https://chro
 
 Upload the zip. Name, summary, version and icons come from the manifest:
 
-- **Name:** Likelyread: email open tracking for Gmail™ (42 characters, limit 75)
+- **Name:** LikelyRead (10 characters, limit 75)
 - **Summary:** See when the emails you send from Gmail™ are opened. Free with a Google sign-in, or self-host it on your own server. (116 characters, limit 132)
 - **Icon:** `icons/128.png`, 96×96 artwork with 16 px transparent padding.
 

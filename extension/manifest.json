@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Likelyread: email open tracking for Gmail™",
-  "short_name": "Likelyread",
-  "version": "0.4.0",
+  "name": "LikelyRead",
+  "short_name": "LikelyRead",
+  "version": "0.4.1",
   "description": "See when the emails you send from Gmail™ are opened. Free with a Google sign-in, or self-host it on your own server.",
   "homepage_url": "https://likelyread.com",
   "permissions": [
