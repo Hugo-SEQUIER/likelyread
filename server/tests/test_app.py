@@ -628,3 +628,11 @@ def test_opens_by_hour_honours_the_days_window(client, clock):
     st = client.get("/api/stats?days=7", headers=AUTH).json()
     assert sum(d["opens"] for d in st["timeline"]) == 0
     assert sum(st["opens_by_hour"]) == 0
+
+
+def test_health_of_an_address_with_no_tracked_email_yet(client):
+    """An agent checks the pace before its first batch: a new address is on day 1."""
+    rows = client.get("/api/senders/health?sender=New@Example.com&dns=false", headers=AUTH).json()
+    assert [r["sender"] for r in rows] == ["new@example.com"]
+    assert (rows[0]["ramp"]["day"], rows[0]["ramp"]["remaining"], rows[0]["emails"]) == (1, 20, 0)
+    assert client.get("/api/senders/health?sender=nobody&dns=false", headers=AUTH).status_code == 422

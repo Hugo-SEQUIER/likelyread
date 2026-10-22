@@ -3,7 +3,7 @@
 Two modes, one codebase:
 - selfhost (default): one user, one bearer token, every feature. See SPEC.md.
 - cloud (MODE=cloud): many accounts with Google sign-in, Free and Pro plans and
-  Polar billing. The cloud parts live in cloud.py.
+  Stripe billing. The cloud parts live in cloud.py.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import statistics
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
+
+import health
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -46,6 +49,21 @@ def _env_float(name: str, default: float) -> float:
     return float(raw) if raw not in (None, "") else default
 
 
+def pixel_base(env: Mapping[str, str]) -> str:
+    """The public address recipients load the pixel from: PUBLIC_URL on Likelyread
+    Cloud, else the DOMAIN (and HTTPS_PORT) that Caddy serves, as in the installer's
+    setup link. Never the address of an incoming request: an agent calling the server
+    locally would put a local address into sent emails. Empty when neither is set."""
+    url = (env.get("PUBLIC_URL") or "").strip().rstrip("/")
+    if url:
+        return url
+    domain = re.sub(r"^https?://", "", (env.get("DOMAIN") or "").strip().lower()).split("/")[0]
+    if not domain:
+        return ""
+    port = (env.get("HTTPS_PORT") or "").strip()
+    return f"https://{domain}" + (f":{port}" if port and port != "443" else "")
+
+
 class Settings:
     def __init__(self) -> None:
         self.mode = (os.environ.get("MODE") or "selfhost").strip().lower()
@@ -62,6 +80,7 @@ class Settings:
         ]
         self.dashboard = _env_bool("DASHBOARD", True)
         self.pixel_rate_per_min = int(_env_float("PIXEL_RATE_PER_MIN", 60))
+        self.pixel_base = pixel_base(os.environ)
         if self.mode == "selfhost":
             if not self.token:
                 raise RuntimeError("LIKELYREAD_TOKEN is required. Generate one with: openssl rand -hex 32")
@@ -158,6 +177,7 @@ class Principal:
     account_id: str | None
     plan: str  # selfhost | free | pro
     email: str | None = None
+    agent: bool = False  # a cloud Agent token: tracking and results, never account actions
 
     @property
     def features(self) -> dict:
@@ -603,6 +623,232 @@ def purge_old(db: DB, cfg: Settings, now: float | None = None) -> int:
     return n
 
 
+class Api:
+    """What the authenticated API does for one caller, shared by the REST routes
+    below and the MCP tools (mcp_server.py). Errors are HTTPExceptions."""
+
+    def __init__(self, db: DB, store: Store, cloud=None, dns_cache=None) -> None:
+        self.db = db
+        self.store = store
+        self.cloud = cloud
+        self.dns_cache = dns_cache or health.DnsCache()
+
+    def me(self, p: Principal) -> dict:
+        if self.cloud is not None:
+            return self.cloud.me(p)
+        today = self.db.query(
+            "SELECT COUNT(*) AS n FROM emails WHERE account_id IS NULL AND created_at >= ?", (time.time() - 86400,)
+        )[0]["n"]
+        return {
+            "mode": "selfhost",
+            "plan": "selfhost",
+            "email": None,
+            "features": p.features,
+            "usage": {"today": today, "daily_limit": None},
+        }
+
+    def register(self, p: Principal, body: EmailIn) -> dict:
+        now = time.time()
+        sent_at = now - body.age
+        acct = p.account_id
+        db = self.db
+        with db.lock:
+            existing = db.conn.execute("SELECT account_id FROM emails WHERE id = ?", (body.id,)).fetchone()
+            if existing is not None and existing["account_id"] != acct:
+                # Pixel ids are random; one belonging to another account is never reused.
+                raise HTTPException(status_code=409, detail="id belongs to another account")
+            limit = p.features["daily_limit"]
+            if existing is None and limit is not None:
+                # created_at is server time: a client-chosen age cannot dodge the limit.
+                n = db.conn.execute(
+                    "SELECT COUNT(*) FROM emails WHERE account_id IS ? AND created_at >= ?", (acct, now - 86400)
+                ).fetchone()[0]
+                if n >= limit:
+                    raise HTTPException(status_code=429, detail={"error": "daily_limit", "limit": limit})
+            # Upsert: a retried registration carries the same data; a re-send after a
+            # failed or undone send updates the record to the real send.
+            db.conn.execute(
+                """INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender, account_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET subject=excluded.subject, recipients=excluded.recipients,
+                   sent_at=excluded.sent_at, campaign=COALESCE(excluded.campaign, emails.campaign),
+                   sender=COALESCE(excluded.sender, emails.sender)
+                   WHERE emails.account_id IS excluded.account_id""",
+                (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign, body.sender, acct, now),
+            )
+        return {"ok": True, "id": body.id, "sent_at": sent_at}
+
+    def list_emails(
+        self,
+        p: Principal,
+        limit: int = 50,
+        offset: int = 0,
+        campaign: str | None = None,
+        q: str | None = None,
+        status: str | None = None,
+        sender: str | None = None,
+    ) -> tuple[list[dict], int]:
+        """One page of email summaries, newest first, and the total that match."""
+        if campaign:
+            need(p, "campaigns")
+        if sender:
+            need(p, "senders")
+        items = [s for s, _ in self.store.summaries(p.account_id, campaign, q, sender, p.since())]
+        if status:
+            items = [s for s in items if s["status"] == status]
+        return items[offset : offset + limit], len(items)
+
+    def email(self, p: Principal, email_id: str) -> dict:
+        found = self.store.one(p.account_id, email_id.lower(), p.since())
+        if not found:
+            raise HTTPException(status_code=404, detail="not found")
+        return found
+
+    def set_campaign(self, p: Principal, email_id: str, campaign: str | None) -> dict:
+        email_id = email_id.lower()
+        if self.store.one(p.account_id, email_id, p.since()) is None:  # raises 402 past the free history
+            raise HTTPException(status_code=404, detail="not found")
+        cur = self.db.execute(
+            "UPDATE emails SET campaign = ? WHERE id = ? AND account_id IS ?",
+            (_clean_campaign(campaign), email_id, p.account_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="not found")
+        return self.email(p, email_id)
+
+    def campaigns(self, p: Principal) -> list[dict]:
+        need(p, "campaigns")
+        groups: dict[str | None, list[dict]] = defaultdict(list)
+        for s, _ in self.store.summaries(p.account_id):
+            groups[s["campaign"]].append(s)
+        out = []
+        for name, items in groups.items():
+            opened = [s for s in items if s["opens"] > 0]
+            last_opens = [s["last_open"] for s in opened]
+            ttfo = [s["first_open"] - s["sent_at"] for s in opened if s["sent_at"] is not None]
+            sent = [s["sent_at"] for s in items if s["sent_at"] is not None]
+            out.append(
+                {
+                    "name": name,
+                    "emails": len(items),
+                    "opened": len(opened),
+                    "open_rate": len(opened) / len(items) if items else 0,
+                    "opens": sum(s["opens"] for s in items),
+                    "prefetch_only": sum(1 for s in items if s["status"] == "prefetch_only"),
+                    "first_sent": min(sent) if sent else None,
+                    "last_sent": max(sent) if sent else None,
+                    "last_open": max(last_opens) if last_opens else None,
+                    "median_time_to_open": statistics.median(ttfo) if ttfo else None,
+                }
+            )
+        out.sort(key=lambda c: c["last_sent"] or 0, reverse=True)
+        return out
+
+    def campaign_names(self, p: Principal) -> list[str]:
+        """Names only, for the compose picker and agents. Every plan can tag emails."""
+        rows = self.db.query(
+            "SELECT campaign, MAX(sent_at) AS last FROM emails WHERE account_id IS ? AND campaign IS NOT NULL "
+            "AND campaign != '' GROUP BY campaign ORDER BY last DESC LIMIT 50",
+            (p.account_id,),
+        )
+        return [r["campaign"] for r in rows]
+
+    def senders_health(self, p: Principal, sender: str | None = None, dns: bool = True) -> list[dict]:
+        need(p, "senders")
+        db = self.db
+        now = time.time()
+        wanted = (sender or "").strip().lower()
+        if wanted and ("@" not in wanted or " " in wanted):
+            raise HTTPException(status_code=422, detail="not an email address")
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for s, _ in self.store.summaries(p.account_id, since=now - 35 * 86400):
+            addr = (s["sender"] or "").lower()
+            if addr and "@" in addr and (not wanted or addr == wanted):
+                groups[addr].append(s)
+        acct_key = p.account_id or ""
+        # The ramp starts at the first tracked email ever, not only the last 35 days.
+        firsts = {
+            r["s"]: r["first"]
+            for r in db.query(
+                "SELECT lower(sender) AS s, MIN(sent_at) AS first FROM emails WHERE account_id IS ? "
+                "AND sender IS NOT NULL GROUP BY lower(sender)",
+                (p.account_id,),
+            )
+        }
+        if wanted and not groups:
+            # Nothing recent, or nothing tracked yet: a new address starts on day 1 of the pace guide.
+            groups[wanted] = []
+        established = {
+            r["sender"]
+            for r in db.query("SELECT sender FROM sender_settings WHERE acct = ? AND established = 1", (acct_key,))
+        }
+        dns_results = self.dns_cache.many([a.split("@", 1)[1] for a in groups]) if dns else {}
+        out = []
+        for addr, emails in groups.items():
+            rep_ = health.report(addr, emails, dns_results.get(addr.split("@", 1)[1]), addr in established, now)
+            first = firsts.get(addr)
+            if first is not None and not rep_["established"]:
+                rep_["ramp"] = health.ramp(first, rep_["ramp"]["sent_24h"], False, now)
+                rep_["first_sent"] = first
+            out.append(rep_)
+        order = {"bad": 0, "warn": 1, "ok": 2}
+        out.sort(key=lambda r: (order[r["status"]], -r["emails"]))
+        return out
+
+    def stats(
+        self, p: Principal, campaign: str | None = None, sender: str | None = None, days: int = 30, tz: int = 0
+    ) -> dict:
+        need(p, "stats")
+        pairs = self.store.summaries(p.account_id, campaign, sender=sender)
+        items = [s for s, _ in pairs]
+        now = time.time()
+        today = datetime.fromtimestamp(now + tz * 60, tz=timezone.utc).date()
+        keys = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+        sent_by_day = dict.fromkeys(keys, 0)
+        opens_by_day = dict.fromkeys(keys, 0)
+        opens_by_hour = [0] * 24
+        recent: list[dict] = []
+        for s, hits in pairs:
+            if s["sent_at"] is not None:
+                k = _day_key(s["sent_at"], tz)
+                if k in sent_by_day:
+                    sent_by_day[k] += 1
+            for h in hits:
+                if h["kind"] != "open":
+                    continue
+                k = _day_key(h["ts"], tz)
+                if k in opens_by_day:  # the hour chart honours the same window as the timeline
+                    opens_by_day[k] += 1
+                    opens_by_hour[_hour(h["ts"], tz)] += 1
+                recent.append(
+                    {
+                        "email_id": s["id"],
+                        "subject": s["subject"],
+                        "campaign": s["campaign"],
+                        "sender": s["sender"],
+                        "recipients": s["recipients"],
+                        "ts": h["ts"],
+                        "via": h["via"],
+                    }
+                )
+        recent.sort(key=lambda r: r["ts"], reverse=True)
+        opened = [s for s in items if s["opens"] > 0]
+        ttfo = [s["first_open"] - s["sent_at"] for s in opened if s["sent_at"] is not None]
+        return {
+            "emails": len(items),
+            "opened": len(opened),
+            "open_rate": len(opened) / len(items) if items else 0,
+            "opens": sum(s["opens"] for s in items),
+            "prefetch_only": sum(1 for s in items if s["status"] == "prefetch_only"),
+            "self": sum(s["self"] for s in items),
+            "opens_last_7d": sum(1 for r in recent if r["ts"] >= now - 7 * 86400),
+            "median_time_to_open": statistics.median(ttfo) if ttfo else None,
+            "timeline": [{"date": k, "sent": sent_by_day[k], "opens": opens_by_day[k]} for k in keys],
+            "opens_by_hour": opens_by_hour,
+            "recent_opens": recent[:20],
+        }
+
+
 def create_app(cfg: Settings | None = None) -> FastAPI:
     cfg = cfg or Settings()
     db = DB(cfg.db_path)
@@ -611,14 +857,16 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     # Gmail proxy hits are keyed per (proxy ip, email) and live in their own table,
     # so a burst of them can never fill the table that direct hits rely on.
     proxy_limiter = RateLimiter(cfg.pixel_rate_per_min)
-    import health
-
     dns_cache = health.DnsCache()
     cloud = None
     if cfg.mode == "cloud":
         import cloud as cloud_mod  # only loaded in cloud mode
 
         cloud = cloud_mod.Cloud(db, cloud_mod.CloudSettings())
+    api = Api(db, store, cloud, dns_cache)
+    import mcp_server  # imports this module's models, so not at the top
+
+    agent_mcp = mcp_server.create(api, cfg.pixel_base)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -633,8 +881,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
                 await asyncio.sleep(86400)
 
         task = asyncio.create_task(retention_loop())
-        yield
-        task.cancel()
+        try:
+            async with agent_mcp.session_manager.run():
+                yield
+        finally:
+            task.cancel()
 
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db = db
@@ -660,7 +911,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if not request.url.path.startswith("/p/"):
             response.headers.setdefault("X-Frame-Options", "DENY")
-        if request.url.path.startswith("/api/") or request.url.path.startswith("/auth/"):
+        if request.url.path.startswith(("/api/", "/auth/", "/mcp")):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
@@ -725,40 +976,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
     @app.get("/api/me")
     def me(p: Principal = Depends(principal)):
-        if cloud is not None:
-            return cloud.me(p)
-        return {"mode": "selfhost", "plan": "selfhost", "email": None, "features": p.features}
+        return api.me(p)
 
     @app.post("/api/emails")
     def register(body: EmailIn, p: Principal = Depends(principal)):
-        now = time.time()
-        sent_at = now - body.age
-        acct = p.account_id
-        with db.lock:
-            existing = db.conn.execute("SELECT account_id FROM emails WHERE id = ?", (body.id,)).fetchone()
-            if existing is not None and existing["account_id"] != acct:
-                # Pixel ids are random; one belonging to another account is never reused.
-                raise HTTPException(status_code=409, detail="id belongs to another account")
-            limit = p.features["daily_limit"]
-            if existing is None and limit is not None:
-                # created_at is server time: a client-chosen age cannot dodge the limit.
-                n = db.conn.execute(
-                    "SELECT COUNT(*) FROM emails WHERE account_id IS ? AND created_at >= ?", (acct, now - 86400)
-                ).fetchone()[0]
-                if n >= limit:
-                    raise HTTPException(status_code=429, detail={"error": "daily_limit", "limit": limit})
-            # Upsert: a retried registration carries the same data; a re-send after a
-            # failed or undone send updates the record to the real send.
-            db.conn.execute(
-                """INSERT INTO emails(id, subject, recipients, sent_at, campaign, sender, account_id, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET subject=excluded.subject, recipients=excluded.recipients,
-                   sent_at=excluded.sent_at, campaign=COALESCE(excluded.campaign, emails.campaign),
-                   sender=COALESCE(excluded.sender, emails.sender)
-                   WHERE emails.account_id IS excluded.account_id""",
-                (body.id, body.subject, json.dumps(body.recipients), sent_at, body.campaign, body.sender, acct, now),
-            )
-        return {"ok": True, "id": body.id, "sent_at": sent_at}
+        return api.register(p, body)
 
     @app.post("/api/emails/{email_id}/suppress")
     def suppress(email_id: str, p: Principal = Depends(principal)):
@@ -786,34 +1008,17 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         status: str | None = Query(None, pattern="^(opened|not_opened|prefetch_only)$"),
         sender: str | None = Query(None, max_length=320),
     ):
-        if campaign:
-            need(p, "campaigns")
-        if sender:
-            need(p, "senders")
-        items = [s for s, _ in store.summaries(p.account_id, campaign, q, sender, p.since())]
-        if status:
-            items = [s for s in items if s["status"] == status]
-        response.headers["X-Total-Count"] = str(len(items))
-        return items[offset : offset + limit]
+        items, total = api.list_emails(p, limit, offset, campaign, q, status, sender)
+        response.headers["X-Total-Count"] = str(total)
+        return items
 
     @app.get("/api/emails/{email_id}")
     def get_email(email_id: str, p: Principal = Depends(principal)):
-        found = store.one(p.account_id, email_id.lower(), p.since())
-        if not found:
-            raise HTTPException(status_code=404, detail="not found")
-        return found
+        return api.email(p, email_id)
 
     @app.patch("/api/emails/{email_id}")
     def patch_email(email_id: str, body: EmailPatch, p: Principal = Depends(principal)):
-        email_id = email_id.lower()
-        if store.one(p.account_id, email_id, p.since()) is None:  # raises 402 past the free history
-            raise HTTPException(status_code=404, detail="not found")
-        cur = db.execute(
-            "UPDATE emails SET campaign = ? WHERE id = ? AND account_id IS ?", (body.campaign, email_id, p.account_id)
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="not found")
-        return store.one(p.account_id, email_id, p.since())
+        return api.set_campaign(p, email_id, body.campaign)
 
     @app.delete("/api/emails/{email_id}")
     def delete_email(email_id: str, p: Principal = Depends(principal)):
@@ -829,42 +1034,12 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
     @app.get("/api/campaigns")
     def campaigns(p: Principal = Depends(principal)):
-        need(p, "campaigns")
-        groups: dict[str | None, list[dict]] = defaultdict(list)
-        for s, _ in store.summaries(p.account_id):
-            groups[s["campaign"]].append(s)
-        out = []
-        for name, items in groups.items():
-            opened = [s for s in items if s["opens"] > 0]
-            last_opens = [s["last_open"] for s in opened]
-            ttfo = [s["first_open"] - s["sent_at"] for s in opened if s["sent_at"] is not None]
-            sent = [s["sent_at"] for s in items if s["sent_at"] is not None]
-            out.append(
-                {
-                    "name": name,
-                    "emails": len(items),
-                    "opened": len(opened),
-                    "open_rate": len(opened) / len(items) if items else 0,
-                    "opens": sum(s["opens"] for s in items),
-                    "prefetch_only": sum(1 for s in items if s["status"] == "prefetch_only"),
-                    "first_sent": min(sent) if sent else None,
-                    "last_sent": max(sent) if sent else None,
-                    "last_open": max(last_opens) if last_opens else None,
-                    "median_time_to_open": statistics.median(ttfo) if ttfo else None,
-                }
-            )
-        out.sort(key=lambda c: c["last_sent"] or 0, reverse=True)
-        return out
+        return api.campaigns(p)
 
     @app.get("/api/campaign-names")
     def campaign_names(p: Principal = Depends(principal)):
         """Names only, for the compose picker. Every plan can tag emails."""
-        rows = db.query(
-            "SELECT campaign, MAX(sent_at) AS last FROM emails WHERE account_id IS ? AND campaign IS NOT NULL "
-            "AND campaign != '' GROUP BY campaign ORDER BY last DESC LIMIT 50",
-            (p.account_id,),
-        )
-        return [r["campaign"] for r in rows]
+        return api.campaign_names(p)
 
     @app.get("/api/senders")
     def senders(p: Principal = Depends(principal)):
@@ -884,41 +1059,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         sender: str | None = Query(None, max_length=320),
         dns: bool = Query(True, description="false skips the DNS checks (fast, for the extension)"),
     ):
-        need(p, "senders")
-        now = time.time()
-        groups: dict[str, list[dict]] = defaultdict(list)
-        for s, _ in store.summaries(p.account_id, since=now - 35 * 86400):
-            addr = (s["sender"] or "").lower()
-            if addr and "@" in addr and (not sender or addr == sender.strip().lower()):
-                groups[addr].append(s)
-        acct_key = p.account_id or ""
-        # The ramp starts at the first tracked email ever, not only the last 35 days.
-        firsts = {
-            r["s"]: r["first"]
-            for r in db.query(
-                "SELECT lower(sender) AS s, MIN(sent_at) AS first FROM emails WHERE account_id IS ? "
-                "AND sender IS NOT NULL GROUP BY lower(sender)",
-                (p.account_id,),
-            )
-        }
-        if sender and not groups and sender.strip().lower() in firsts:
-            groups[sender.strip().lower()] = []
-        established = {
-            r["sender"]
-            for r in db.query("SELECT sender FROM sender_settings WHERE acct = ? AND established = 1", (acct_key,))
-        }
-        dns_results = dns_cache.many([a.split("@", 1)[1] for a in groups]) if dns else {}
-        out = []
-        for addr, emails in groups.items():
-            rep_ = health.report(addr, emails, dns_results.get(addr.split("@", 1)[1]), addr in established, now)
-            first = firsts.get(addr)
-            if first is not None and not rep_["established"]:
-                rep_["ramp"] = health.ramp(first, rep_["ramp"]["sent_24h"], False, now)
-                rep_["first_sent"] = first
-            out.append(rep_)
-        order = {"bad": 0, "warn": 1, "ok": 2}
-        out.sort(key=lambda r: (order[r["status"]], -r["emails"]))
-        return out
+        return api.senders_health(p, sender, dns)
 
     @app.put("/api/senders/health/{sender}")
     def set_sender(sender: str, body: SenderSettingsIn, p: Principal = Depends(principal)):
@@ -955,58 +1096,14 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         days: int = Query(30, ge=1, le=365),
         tz: int = Query(0, ge=-14 * 60, le=14 * 60, description="minutes east of UTC"),
     ):
-        need(p, "stats")
-        pairs = store.summaries(p.account_id, campaign, sender=sender)
-        items = [s for s, _ in pairs]
-        now = time.time()
-        today = datetime.fromtimestamp(now + tz * 60, tz=timezone.utc).date()
-        keys = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
-        sent_by_day = dict.fromkeys(keys, 0)
-        opens_by_day = dict.fromkeys(keys, 0)
-        opens_by_hour = [0] * 24
-        recent: list[dict] = []
-        for s, hits in pairs:
-            if s["sent_at"] is not None:
-                k = _day_key(s["sent_at"], tz)
-                if k in sent_by_day:
-                    sent_by_day[k] += 1
-            for h in hits:
-                if h["kind"] != "open":
-                    continue
-                k = _day_key(h["ts"], tz)
-                if k in opens_by_day:  # the hour chart honours the same window as the timeline
-                    opens_by_day[k] += 1
-                    opens_by_hour[_hour(h["ts"], tz)] += 1
-                recent.append(
-                    {
-                        "email_id": s["id"],
-                        "subject": s["subject"],
-                        "campaign": s["campaign"],
-                        "sender": s["sender"],
-                        "recipients": s["recipients"],
-                        "ts": h["ts"],
-                        "via": h["via"],
-                    }
-                )
-        recent.sort(key=lambda r: r["ts"], reverse=True)
-        opened = [s for s in items if s["opens"] > 0]
-        ttfo = [s["first_open"] - s["sent_at"] for s in opened if s["sent_at"] is not None]
-        return {
-            "emails": len(items),
-            "opened": len(opened),
-            "open_rate": len(opened) / len(items) if items else 0,
-            "opens": sum(s["opens"] for s in items),
-            "prefetch_only": sum(1 for s in items if s["status"] == "prefetch_only"),
-            "self": sum(s["self"] for s in items),
-            "opens_last_7d": sum(1 for r in recent if r["ts"] >= now - 7 * 86400),
-            "median_time_to_open": statistics.median(ttfo) if ttfo else None,
-            "timeline": [{"date": k, "sent": sent_by_day[k], "opens": opens_by_day[k]} for k in keys],
-            "opens_by_hour": opens_by_hour,
-            "recent_opens": recent[:20],
-        }
+        return api.stats(p, campaign, sender, days, tz)
 
     if cloud is not None:
         cloud.register_routes(app, principal)
+
+    # ---- MCP endpoint for agents: same tokens, same rules as the API ---------
+
+    app.add_route("/mcp", agent_mcp.gate(principal), include_in_schema=False)
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PATCH", "DELETE"], dependencies=auth)
     def api_not_found(rest: str):

@@ -33,10 +33,10 @@ What you get:
 - A toolbar popup with every tracked email and its status
 - A dashboard: every hit with its reason, and on Pro, open rates per campaign, time to first open and busiest hours
 - Sender health on Pro: checks that each address you send from is set up so inboxes trust it, suggests a safe daily pace for new addresses, and warns when opens drop
-- A command-line tool and an agent skill, so scripts and AI agents can track the emails they send
+- An MCP server, a command-line tool and an agent skill, so AI agents and scripts can track the emails they send
 
 Two ways to use it:
-- Likelyread Cloud: click Sign in with Google in the extension's settings and you are ready. The Free plan tracks every email with no signature added to it and keeps 30 days of history. Pro (from $3 a month, billed yearly) adds campaign analytics, charts, filters and unlimited history.
+- Likelyread Cloud: click Sign in with Google in the extension's settings and you are ready. The Free plan tracks every email with no signature added to it and keeps 30 days of history. Pro (from €3 a month plus VAT, billed yearly) adds campaign analytics, charts, filters and unlimited history.
 - Self-hosted: install the open-source server on any small Linux machine with one command and paste the setup link it prints. Every feature, free, and your data never leaves your server.
 
 The extension has no analytics and loads no code from the internet. Open source, MIT licence.
@@ -104,7 +104,7 @@ Reviewers can use Likelyread Cloud with their own Google account; nothing else i
 2. Click "Sign in with Google" and pick any Google account. The tab that opens says "Extension connected". Close it.
 3. Open Gmail and write an email to an address you can read elsewhere (a second account or your phone). A red eye and a campaign menu appear next to Send. Send it.
 4. Open that email as the recipient. Within a minute, the extension's toolbar popup shows "Opened" for it. Click the row to see each hit and why it counted.
-5. https://app.likelyread.com shows the dashboard (Overview, Campaigns, Emails, Account). Campaign analytics are part of the paid Pro plan; the Free plan shows an upgrade card there. Paid plans are sold on our website through Polar, not through the extension.
+5. https://app.likelyread.com shows the dashboard (Overview, Campaigns, Emails, Account). Campaign analytics are part of the paid Pro plan; the Free plan shows an upgrade card there. Paid plans are sold on our website through Stripe, not through the extension.
 
 Note: opening the email in the sender's own Gmail account is deliberately not counted as an open; the hit is marked "Self view".
 ```
