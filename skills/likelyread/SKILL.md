@@ -41,6 +41,8 @@ claude mcp add --transport http likelyread https://app.likelyread.com/mcp --head
 
 Ask the user to run it, or to give you the command from Connect; never invent a token. The tools appear in the next session.
 
+**In Claude (claude.ai, the desktop and mobile apps) and ChatGPT**, on Likelyread Cloud, there is no token: the user adds Likelyread from the dashboard's **Connect** page (**Add to Claude**, or the address `https://app.likelyread.com/mcp` with OAuth in ChatGPT) and signs in with Google. Claude Code can sign in the same way: add the server without `--header`, then run `/mcp`.
+
 **With the CLI**, for an agent without MCP or a script: the user needs a **setup link** like `https://app.likelyread.com/#connect=TOKEN`. It is on their dashboard under **Connect**, on Likelyread Cloud or their own server, and the instructions under *Agents without MCP, and scripts* there already include it. With no account or server yet, they can sign up at `https://app.likelyread.com`, or self-host with one command on their server (`curl -fsSL https://raw.githubusercontent.com/Hugo-SEQUIER/likelyread/main/deploy/install.sh | sudo bash`, see the README), which prints the link. Then:
 
 ```bash

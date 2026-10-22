@@ -1,5 +1,7 @@
 """MCP endpoint for agents at /mcp: Claude Code, Cursor, Codex and other MCP clients
-connect with one command and the same bearer token as the API.
+connect with one command and the same bearer token as the API. On Likelyread Cloud,
+Claude, ChatGPT and other apps can sign in instead and get a token of their own
+(oauth.py).
 
 Built on the official MCP Python SDK, streamable HTTP, stateless and answering in
 plain JSON: the server never pushes anything. Every tool runs the same code as the
@@ -176,7 +178,8 @@ def without_raw_hits(email: dict) -> dict:
 
 class Gate:
     """The /mcp route, an ASGI app: the Origin check the MCP spec requires against DNS
-    rebinding, then the bearer token, checked by the REST API's own principal()."""
+    rebinding, then the bearer token, checked by app.py's mcp_principal(): the API's
+    tokens, and on the cloud the access tokens apps get by signing in."""
 
     def __init__(
         self,

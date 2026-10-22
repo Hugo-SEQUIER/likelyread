@@ -183,7 +183,18 @@ tr.dimrow td { color: var(--muted); }
 .copy-row { margin-top: 6px; }
 .token-row { margin-top: 18px; }
 .token-label { font-weight: 500; margin-right: 6px; }
+.app-add { margin-top: 12px; }
+.app-address { margin-top: 18px; }
 @media (max-width: 900px) { .connect-steps.two { grid-template-columns: 1fr; } }
+
+/* connected apps (Account) and the consent page apps sign in through */
+.apps { display: grid; gap: 6px; }
+.app-row { background: var(--surface); padding: 12px 16px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 16px; align-items: center; }
+.app-row > div { overflow-wrap: anywhere; }
+@media (max-width: 900px) { .app-row { grid-template-columns: 1fr; gap: 6px; } .app-row .btn { justify-self: start; } }
+.consent { list-style: disc; padding-left: 18px; display: grid; gap: 6px; }
+.consent-warn { background: var(--accent-tint); color: var(--accent-deep); padding: 12px 14px; font-weight: 500; }
+.login-card strong { font-weight: 600; overflow-wrap: anywhere; }
 
 /* cloud: plans and upsells */
 .upsell { background: var(--ink); color: #fff; padding: 28px; display: grid; gap: 14px; align-content: start; }

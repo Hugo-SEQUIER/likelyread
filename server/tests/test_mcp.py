@@ -171,12 +171,20 @@ def test_responses_are_json_and_never_cached(selfhost):
 
 @pytest.mark.parametrize("mode", ["selfhost", "cloud"])
 def test_missing_or_wrong_token_gets_401(mode, request):
+    """A self-hosted server has one token and nothing to sign in to. The cloud's 401
+    points apps at its OAuth metadata (tests/test_oauth.py)."""
     c = request.getfixturevalue("selfhost" if mode == "selfhost" else "cloud_client")
+    meta = f'resource_metadata="{CLOUD_URL}/.well-known/oauth-protected-resource/mcp"'
     for headers in ({}, {"Authorization": "Bearer wrong"}, {"Authorization": TOKEN}, {"Authorization": f"Basic {TOKEN}"}):
         r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                    headers={"Accept": "application/json, text/event-stream", **headers})
         assert r.status_code == 401, headers
-        assert r.headers["www-authenticate"] == "Bearer"
+        if mode == "selfhost":
+            assert r.headers["www-authenticate"] == "Bearer"
+        elif headers.get("Authorization", "").startswith("Bearer "):
+            assert r.headers["www-authenticate"] == f'Bearer error="invalid_token", {meta}', headers
+        else:
+            assert r.headers["www-authenticate"] == f"Bearer {meta}", headers
 
 
 def test_only_post_no_event_stream(selfhost):

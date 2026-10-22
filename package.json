@@ -9,6 +9,7 @@
     "zod": "^4.1.8"
   },
   "scripts": {
-    "test:e2e": "e2e run"
+    "test:e2e": "e2e run",
+    "test:e2e:cloud": "e2e run --config e2e.cloud.config.ts"
   }
 }

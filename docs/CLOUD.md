@@ -15,6 +15,7 @@ sales tax. Likelyread is the seller. Self-hosting stays free with every feature.
 | "Sent with" signature in your emails | Never | Never | Never |
 | Pick a campaign in Gmail's compose window | Yes | Yes | Yes |
 | Agent MCP, CLI and API | Yes | Yes | Yes |
+| Claude and ChatGPT connect with a sign-in | Yes | Yes | No: they use the server's token |
 | History | 30 days | Unlimited | Unlimited |
 | Campaign analytics, charts, filters by campaign and sender | No | Yes | Yes |
 | Sender health: SPF/DKIM/DMARC checks, daily pace guide, open-rate drop alerts | No | Yes | Yes |
@@ -96,10 +97,16 @@ Everything below is a one-time setup on the cloud server.
 
 - **Accounts and sign-in:**
   - *Sign-in.* The dashboard and the extension use Google. PKCE and a signed 10-minute cookie protect the round trip.
-  - *Tokens.* Each sign-in creates a bearer token, and the Connect page creates agent tokens on request. The server stores only the SHA-256 hash of each. Per account it keeps the 20 newest sign-in tokens and the 5 newest agent tokens, in separate pools: a sign-in never pushes out an agent token, and a sixth agent token replaces the oldest agent token, never a sign-in. *Sign out everywhere* revokes them all; *Revoke agent tokens* (Account, Security) revokes only the agent tokens.
+  - *Tokens.* Each sign-in creates a bearer token, and the Connect page creates agent tokens on request. The server stores only the SHA-256 hash of each. Per account it keeps the 20 newest sign-in tokens and the 5 newest agent tokens, in separate pools: a sign-in never pushes out an agent token, and a sixth agent token replaces the oldest agent token, never a sign-in. Apps connected with a sign-in (below) are a third pool of 10 connections, where an eleventh replaces the least recently used. *Sign out everywhere* revokes them all, connected apps included; *Revoke agent tokens* (Account, Security) revokes only the agent tokens.
   - *Extension handoff.* The extension opens `/auth/google?ext=<extension id>`. After sign-in, the page hands the token to the extension with `chrome.runtime.sendMessage`. The manifest lists `https://app.likelyread.com/*` under `externally_connectable`, and the extension accepts the message only from that origin.
   - *Agents.* AI agents connect over MCP at `https://app.likelyread.com/mcp`, with the token in an `Authorization: Bearer` header. On the dashboard's **Connect** page, *Create agent token* makes a token labelled `Agent` (`POST /api/me/agent-token`) when clicked, never on page load. It fills in the setup for Claude Code, Cursor, VS Code, Codex and other MCP clients, and a prompt that an agent such as Hermes follows to set itself up. The instructions for agents without MCP (they install the CLI and the agent skill from GitHub and run `likelyread setup`) use the same token. The server returns the token once. The page shows it masked, next to *Copy token* and *Show*; the setups and prompts carry it only when copied.
   - *What an agent token can do.* Track emails and read results, through MCP or the API. Account actions answer 403 with it: deleting or exporting the account, signing out everywhere, checkout and the billing portal, and creating or revoking agent tokens. An agent misled by something it read cannot touch the account.
+  - *Apps that sign in (OAuth).* Claude (claude.ai, the desktop and mobile apps, Claude Code), ChatGPT and other MCP apps connect without a token to copy. `server/oauth.py` makes the server an OAuth 2.1 authorization server for `/mcp`, following the MCP authorization spec:
+    - *Discovery.* An unauthenticated `/mcp` request answers 401 with `WWW-Authenticate: Bearer resource_metadata="https://app.likelyread.com/.well-known/oauth-protected-resource/mcp"`. That document (RFC 9728) names `https://app.likelyread.com/mcp` as the resource and `https://app.likelyread.com` as its authorization server, whose metadata is at `/.well-known/oauth-authorization-server` (RFC 8414).
+    - *Which app is asking.* Apps identify themselves with a client metadata document: the `client_id` is an https URL to a JSON document with the app's name and redirect URIs (Claude's is `https://claude.ai/oauth/mcp-oauth-client-metadata`, ChatGPT's `https://chatgpt.com/oauth/client.json`). The server fetches it with guards, because anyone can name any URL: https on port 443 and a host name only, public internet addresses only (and it connects to the address it checked), no redirects, 16 KB and 5 seconds at most, cached as its `Cache-Control` says, 20 fetches a minute per client IP. A redirect URI must be listed in the document exactly; a loopback one (`http://127.0.0.1/...`, `http://localhost/...`, as Claude Code uses) matches on any port. There is no dynamic client registration, and there are no client secrets: apps are public clients, and PKCE (S256) ties each code to the app that asked.
+    - *Sign-in and consent.* `/oauth/authorize` checks the request, then sends the user to Google (the same sign-in and redirect URI as the dashboard; the checked request travels in the signed sign-in cookie). After Google, the user sees which app asks (its name and the host of its document), the account, what the app can do, and where they go back to, with a warning when that is an app on this computer. Every connection needs its own **Approve**; nothing is remembered. Errors after the app is checked go back to its redirect URI, every answer carries `iss` (RFC 9207), and errors before go to a page, never to an unchecked address.
+    - *Tokens.* A code is redeemed once, within 5 minutes, at `/oauth/token`. The app gets an access token that works only at `/mcp`, for an hour, and acts like an agent token (no account actions); the API answers 401 to it. Its refresh token rotates at every refresh, and the last one spent still works until the app uses its replacement, for an app that lost an answer. A connection that gets no new token for 180 days ends. `/oauth/revoke` ends a connection from the app's side; **Connected apps** on the Account page lists them, each with **Disconnect** (`GET /api/me/apps`, `DELETE /api/me/apps/{id}`, sign-in tokens only).
+    - *Links.* The Connect page's **Add to Claude** opens `https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Likelyread&connectorUrl=https%3A%2F%2Fapp.likelyread.com%2Fmcp`, Claude's dialog with both filled in; the user still confirms there. Nothing needs setting up for any of this beyond the Google sign-in already configured.
 - **Data isolation:**
   - *Scoping.* Every query is scoped to the account.
   - *Pixel ids.* An id registered by one account can never be claimed by another; the server answers 409.
@@ -114,7 +121,7 @@ Everything below is a one-time setup on the cloud server.
   - *Lifetime.* It is a one-time payment, with an invoice. It is granted once the payment is confirmed, including a delayed method such as a bank debit.
 - **Hardening:**
   - *Daily limit.* It counts the server's registration time, so a client-supplied `age` cannot dodge it.
-  - *Idle tokens.* An extension or agent token unused for 180 days stops working; a dashboard token (kept in the browser) after 30 days. Agents connected from the Connect page have an agent token of their own, so they no longer lapse with the browser's.
+  - *Idle tokens.* An extension or agent token unused for 180 days stops working; a dashboard token (kept in the browser) after 30 days. Agents connected from the Connect page have an agent token of their own, so they no longer lapse with the browser's. An app connected with a sign-in ends after 180 days without a refresh.
   - *Subscription events.* An event for a subscription other than the current live one never changes the plan.
   - *One subscription at a time.* Checkout refuses a second subscription while one is live.
   - *Deleting an account.* It cancels the subscription in Stripe first. A tombstone records the deleted account, so late events are recognised.
@@ -127,9 +134,12 @@ Everything below is a one-time setup on the cloud server.
 ## Tests
 
 ```bash
-cd server && python -m pytest -q                      # includes tests/test_cloud.py
+cd server && python -m pytest -q                      # includes tests/test_cloud.py and tests/test_oauth.py
 cd extension && CHROME_PATH=... PYTHON=... npm run e2e:cloud
+npx e2e run --config e2e.cloud.config.ts tests/cloud/connect-apps.e2e.ts   # from the repository root
 ```
+
+`tests/test_oauth.py` runs the OAuth flow for Claude, Claude Code and ChatGPT with copies of their client metadata documents, every refusal, refresh and revocation, the guards on fetching documents, and the MCP SDK's own OAuth client against a live server. `tests/cloud/connect-apps.e2e.ts` (the `e2e` package, with fake Google and a test app from `tests/support/cloud-server.mjs`) drives the Connect page, an app's sign-in through the consent page to a working `/mcp` token, and **Disconnect** on the Account page.
 
 `e2e:cloud` runs real Chromium with the extension built for a local cloud, plus fake Google and fake Stripe servers. It covers the following:
 

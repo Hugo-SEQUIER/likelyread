@@ -903,8 +903,10 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     cloud = None
     if cfg.mode == "cloud":
         import cloud as cloud_mod  # only loaded in cloud mode
+        import oauth
 
         cloud = cloud_mod.Cloud(db, cloud_mod.CloudSettings())
+        cloud.oauth = oauth.OAuth(cloud)
     api = Api(db, store, cloud, dns_cache)
     import mcp_server  # imports this module's models, so not at the top
 
@@ -953,7 +955,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if not request.url.path.startswith("/p/"):
             response.headers.setdefault("X-Frame-Options", "DENY")
-        if request.url.path.startswith(("/api/", "/auth/", "/mcp")):
+        if request.url.path.startswith(("/api/", "/auth/", "/oauth/", "/mcp")):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
@@ -975,6 +977,17 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         found = cloud.authenticate(supplied) if supplied else None
         if found is None:
             raise unauthorized()
+        return found
+
+    def mcp_principal(request: Request) -> Principal:
+        """/mcp also takes the access tokens apps get by signing in (oauth.py), which work
+        nowhere else, and its 401 on the cloud tells an app where to sign in."""
+        if cloud is None:
+            return principal(request)
+        supplied = bearer(request)
+        found = (cloud.authenticate(supplied) or cloud.authenticate_app(supplied)) if supplied else None
+        if found is None:
+            raise cloud.oauth.challenge(bool(supplied))
         return found
 
     auth = [Depends(principal)]
@@ -1142,10 +1155,11 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
     if cloud is not None:
         cloud.register_routes(app, principal)
+        cloud.oauth.register_routes(app)
 
     # ---- MCP endpoint for agents: same tokens, same rules as the API ---------
 
-    app.add_route("/mcp", agent_mcp.gate(principal), include_in_schema=False)
+    app.add_route("/mcp", agent_mcp.gate(mcp_principal), include_in_schema=False)
 
     @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PATCH", "DELETE"], dependencies=auth)
     def api_not_found(rest: str):

@@ -502,6 +502,11 @@ const MCP_CLIENTS = [
     text: (url, auth) => JSON.stringify({ mcpServers: { likelyread: { type: "http", url, headers: { Authorization: auth } } } }, null, 2) },
 ];
 
+/** Claude's Add custom connector dialog with Likelyread's name and address filled in. The
+ * user still confirms there, then signs in with Google (oauth.py on the server). */
+const claudeInstallUrl = (url) =>
+  `https://claude.ai/customize/connectors?${new URLSearchParams({ modal: "add-custom-connector", connectorName: "Likelyread", connectorUrl: url })}`;
+
 /** A secret in a masked field with Copy and Show, as the setup link and the agent token use. */
 function secretField(label, copyLabel) {
   const field = h("input", { type: "password", readonly: true, "aria-label": label, class: "link-field" });
@@ -599,14 +604,39 @@ function viewConnect(root) {
     show();
   } }, state.agentToken ? "Create another" : "Create agent token");
 
+  // The address alone, for apps that ask for it (no secret in it).
+  const address = h("input", { type: "text", readonly: true, value: mcpUrl, "aria-label": "MCP server address", class: "link-field" });
+  const addressMsg = h("span", { class: "muted small", role: "status" });
+  const copyAddress = async () => {
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      addressMsg.textContent = "Copied.";
+    } catch {
+      address.select();
+      addressMsg.textContent = "Press Ctrl+C (Cmd+C) to copy.";
+    }
+  };
+
   const step = (n, title, body) => h("li", { class: "connect-step" }, h("span", { class: "connect-n" }, n), h("div", {}, h("h3", {}, title), body));
-  root.append(
+  root.append(...[
     h("section", { class: "headline" },
       h("h1", {}, "Connect", h("br"), h("span", { class: "rate" }, "your tools")),
       h("p", {}, cloud
-        ? "Your AI agent connects over MCP with one command and a token of its own. The Chrome extension signs in with Google."
+        ? "Claude and ChatGPT connect with your Google sign-in. Other AI agents connect over MCP with one command and a token of their own. The Chrome extension signs in with Google."
         : "Your AI agent connects over MCP with one command. The Chrome extension and other browsers use your setup link. Both carry your private token: treat them like a password."),
     ),
+    cloud
+      ? h("section", { "aria-label": "Claude and ChatGPT" },
+          sectionHead("Claude and ChatGPT"),
+          h("p", { class: "muted agent-note" }, "Ask about your emails from a chat: who opened the proposal, who to follow up with this week. You sign in with Google and approve the app, so there is no token to copy."),
+          h("ol", { class: "connect-steps two" },
+            step("1", "Claude", [
+              h("p", {}, "Opens Claude with Likelyread filled in. Click Add, then Connect, and sign in with Google. It works on claude.ai and in Claude's desktop and mobile apps. On a Team or Enterprise plan, an Owner adds it for the organization first."),
+              h("a", { class: "btn primary app-add", href: claudeInstallUrl(mcpUrl), target: "_blank", rel: "noopener" }, "Add to Claude"),
+            ]),
+            step("2", "ChatGPT", h("p", {}, "In ChatGPT, open ", h("a", { href: "https://chatgpt.com/plugins", target: "_blank", rel: "noopener" }, "Plugins"), ", click +, then Add custom MCP server. Name it Likelyread, enter the address below as a public endpoint and choose OAuth. Then connect and sign in with Google."))),
+          h("div", { class: "inline-form copy-row app-address" }, address, h("button", { class: "btn", type: "button", onclick: copyAddress }, "Copy address"), addressMsg))
+      : null,
     h("section", {},
       sectionHead("Connect your agent"),
       h("p", { class: "muted agent-note" }, `Claude Code, Cursor, VS Code, Codex and other MCP clients, with nothing to install, or any agent that sets itself up from a prompt, such as Hermes. Your agent gets Likelyread's tools and its rules: it asks before tracking a campaign, keeps a safe pace and reports opens honestly.`),
@@ -635,7 +665,7 @@ function viewConnect(root) {
           : step("1", "Chrome extension", h("p", {}, h("a", { href: STORE_URL, target: "_blank", rel: "noopener" }, "Install the Likelyread extension"), ", open its settings, paste the setup link and click Save. Then write an email in Gmail: the red eye next to Send means it is tracked.")),
         step("2", "Another browser", h("p", {}, "Open the setup link there to sign in to this dashboard."))),
     ),
-  );
+  ].filter(Boolean));
   show();
 }
 
@@ -665,6 +695,15 @@ async function viewAccount(root) {
       h("button", { class: `btn${best ? " primary" : ""}`, type: "button", onclick: () => go("/api/billing/checkout", { plan: key }) }, `Choose ${name.toLowerCase()}`));
 
   const admin = me.admin ? await adminPanel() : null;
+  const { data: apps } = await api("/api/me/apps");
+  const appRow = (a) => h("li", { class: "app-row" },
+    h("div", {}, h("span", { class: "strong" }, a.name), " ", h("span", { class: "muted" }, a.site)),
+    h("span", { class: "muted small" }, `Connected ${fmtDate(a.created_at)}, last used ${relTime(a.last_used)}`),
+    h("button", { class: "btn small", type: "button", onclick: async () => {
+      if (!confirm(`Disconnect ${a.name}? It stops working until you connect it again.`)) return;
+      await api(`/api/me/apps/${encodeURIComponent(a.id)}`, { method: "DELETE" });
+      await render();
+    } }, "Disconnect"));
   root.append(...[
     h("section", { class: "headline" },
       h("h1", {}, planName, h("br"), h("span", { class: "rate" }, "plan")),
@@ -694,10 +733,15 @@ async function viewAccount(root) {
       : null,
     admin,
     h("section", {},
+      sectionHead("Connected apps"),
+      apps.length
+        ? h("ul", { class: "apps", "aria-label": "Connected apps" }, apps.map(appRow))
+        : h("p", { class: "muted" }, "None yet. ", h("a", { href: "#/connect" }, "Connect Claude or ChatGPT"), " to ask about your emails from a chat.")),
+    h("section", {},
       sectionHead("Security"),
       h("div", { class: "inline-form" },
         h("button", { class: "btn", type: "button", onclick: async () => {
-          if (!confirm("Sign out on every device, including the Chrome extension and agents?")) return;
+          if (!confirm("Sign out on every device, including the Chrome extension, agents and connected apps?")) return;
           await api("/api/me/signout-all", { method: "POST" });
           logout();
         } }, "Sign out everywhere"),
