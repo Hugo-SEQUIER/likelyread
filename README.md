@@ -173,6 +173,7 @@ All settings live in `deploy/.env` (see `.env.example`):
 | `GRACE_SECONDS` | `20` | Hits this close to the send time count as your compose preview. |
 | `SUPPRESS_WINDOW_SECONDS` | `60` | Hits within this window after you open your own sent email count as you. |
 | `STORE_IP` | `true` | `false` stops storing IP addresses. |
+| `IP_DAYS` | `30` | Hits older than this keep only the network of their IP address (`203.0.113.0/24`, or `/48` for IPv6). Verdicts do not change. `0` keeps full addresses. |
 | `RETENTION_DAYS` | `0` | Delete hits, and emails sent before the cutoff, older than this many days (`0` keeps everything). Hits for ids that were never registered are always dropped after 8 days. |
 | `PIXEL_RATE_PER_MIN` | `60` | Pixel hits logged per IP per minute. |
 | `DASHBOARD` | `true` | Serve the dashboard at `/`. |
@@ -194,7 +195,7 @@ An "open" means the tracking image loaded on the recipient's side. That is what 
 
 ## Privacy and legal
 
-All data stays on your VPS. `STORE_IP=false` and `RETENTION_DAYS` let you keep less.
+All data stays on your VPS. Full IP addresses are kept for 30 days (`IP_DAYS`), then shortened to their network. `STORE_IP=false` and `RETENTION_DAYS` let you keep less.
 
 Tracking pixels fall under the EU ePrivacy rules and the GDPR. In France, the CNIL's [recommendation on tracking pixels in emails](https://www.cnil.fr/sites/default/files/2026-04/recommandation-pixels_de_suivi.pdf) (adopted 12 March 2026, published 14 April 2026) says that measuring opens to analyse or optimise campaigns requires the recipient's prior consent. That applies to B2B emails too. The exemptions are narrow: authentication security, and deliverability tracking for emails the recipient asked for. You are responsible for how you use this tool and for getting consent where it is required.
 
