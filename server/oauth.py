@@ -32,7 +32,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from app import RateLimiter
-from cloud import Cloud, _b64url, token_hash
+from cloud import FULL_TOOL_APPS, Cloud, _b64url, token_hash
 
 # An authorization code is redeemed once, within this long.
 CODE_SECONDS = 300
@@ -311,8 +311,8 @@ class OAuth:
 
     def server_metadata(self) -> dict:
         """RFC 8414. Public clients only ("none"), identified by client metadata documents,
-        with the issuer in every authorization response (RFC 9207). No scopes: a token
-        can do what an agent token does."""
+        with the issuer in every authorization response (RFC 9207). No scopes: what a
+        token can do depends on the app (cloud.FULL_TOOL_APPS)."""
         return {
             "issuer": self.issuer,
             "authorization_endpoint": f"{self.issuer}/oauth/authorize",
@@ -434,10 +434,16 @@ class OAuth:
             "connection yourself, just now.</p>"
             if here else ""
         )
+        can = (
+            "It can track the emails it sends for you, and read your tracked emails, their opens and your campaigns."
+            if app["client_id"] in FULL_TOOL_APPS else
+            "It can read your tracked emails, their opens, your campaigns and stats, and move emails between "
+            "campaigns. It cannot track new emails."
+        )
         body = f"""<h1 class="login-title">Connect {name}</h1>
       <p><strong>{html.escape(urllib.parse.urlsplit(app["client_id"]).hostname or "")}</strong> wants to use your Likelyread account, {html.escape(saved["email"])}.</p>
       <ul class="consent">
-        <li>It can track the emails it sends for you, and read your tracked emails, their opens and your campaigns.</li>
+        <li>{can}</li>
         <li>It cannot change, export or delete your account.</li>
       </ul>{warn}
       <form method="post" action="/oauth/consent" class="inline-form">
