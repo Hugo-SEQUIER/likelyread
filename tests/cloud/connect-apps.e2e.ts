@@ -36,6 +36,7 @@ test('an app connects with a Google sign-in and an approve page, then is disconn
   // Connect offers Claude a prefilled Add custom connector, and the address for ChatGPT.
   await app.open('/#/connect');
   await expect(screen.getByRole('heading', 'Claude and ChatGPT')).toBeVisible();
+  await expect(screen.getByText('To send tracked emails, use Gmail with the Chrome extension', { exact: false })).toBeVisible();
   await expect(screen.getByRole('link', 'Add to Claude')).toHaveAttribute(
     'href',
     `https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Likelyread&connectorUrl=${encodeURIComponent(mcp)}`,
