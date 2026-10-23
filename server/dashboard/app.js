@@ -133,6 +133,7 @@ async function loadMe() {
   const { data } = await api("/api/me");
   state.me = data;
   document.querySelector('[data-tab="account"]').hidden = !isCloud();
+  document.querySelector('[data-tab="admin"]').hidden = !data.admin;
   return data;
 }
 
@@ -200,6 +201,17 @@ function barChart(points, series, { height = 200, width = 760 } = {}) {
 const legend = (items) => h("div", { class: "legend" }, items.map(([cls, label]) => h("span", {}, h("i", { class: `sw ${cls}` }), label)));
 const tile = (value, label, sub) => h("div", { class: "tile" }, h("div", { class: "tile-value" }, value), h("div", { class: "tile-label" }, label, sub ? h("small", {}, sub) : null));
 const sectionHead = (title, ...right) => h("div", { class: "section-head" }, h("h2", {}, title), ...right);
+const rateCell = (x) => h("div", { class: "rate-cell" }, h("div", { class: "rate-bar" }, h("div", { class: "rate-fill", style: { width: pct(x) } })), pct(x));
+
+/** Previous and Next under a list shown limit items at a time; go({ page }) moves. */
+function pager(page, limit, total, go) {
+  if (total <= limit && page === 0) return null;
+  const pages = Math.max(1, Math.ceil(total / limit));
+  return h("div", { class: "pager" },
+    h("button", { class: "btn small", type: "button", disabled: page === 0, onclick: () => go({ page: Math.min(page - 1, pages - 1) }) }, "Previous"),
+    h("span", { class: "muted small" }, `Page ${page + 1} of ${pages}`),
+    h("button", { class: "btn small", type: "button", disabled: (page + 1) * limit >= total, onclick: () => go({ page: page + 1 }) }, "Next"));
+}
 
 // ---------------------------------------------------------------- views
 
@@ -307,7 +319,7 @@ async function viewCampaigns(root) {
               h("td", { class: "strong" }, campaignLabel(c.name)),
               h("td", { class: "num" }, c.emails),
               h("td", { class: "num" }, c.opened, c.prefetch_only ? h("span", { class: "muted small" }, ` +${c.prefetch_only} prefetch`) : null),
-              h("td", {}, h("div", { class: "rate-cell" }, h("div", { class: "rate-bar" }, h("div", { class: "rate-fill", style: { width: pct(c.open_rate) } })), pct(c.open_rate))),
+              h("td", {}, rateCell(c.open_rate)),
               h("td", { class: "num" }, c.opens),
               h("td", {}, duration(c.median_time_to_open)),
               h("td", {}, relTime(c.last_open)),
@@ -365,12 +377,7 @@ async function viewEmails(root, params) {
                 ))),
             ))
         : h("p", { class: "empty" }, "No emails match these filters."),
-      total > limit || page > 0
-        ? h("div", { class: "pager" },
-            h("button", { class: "btn small", type: "button", disabled: page === 0, onclick: () => go({ page: Math.min(page - 1, Math.max(0, Math.ceil(total / limit) - 1)) }) }, "Previous"),
-            h("span", { class: "muted small" }, `Page ${page + 1} of ${Math.max(1, Math.ceil(total / limit))}`),
-            h("button", { class: "btn small", type: "button", disabled: (page + 1) * limit >= total, onclick: () => go({ page: page + 1 }) }, "Next"))
-        : null,
+      pager(page, limit, total, go),
     ),
   );
 }
@@ -694,7 +701,6 @@ async function viewAccount(root) {
       h("h3", {}, name), h("p", { class: "plan-price" }, price, h("small", {}, per)), h("p", { class: "muted small" }, note),
       h("button", { class: `btn${best ? " primary" : ""}`, type: "button", onclick: () => go("/api/billing/checkout", { plan: key }) }, `Choose ${name.toLowerCase()}`));
 
-  const admin = me.admin ? await adminPanel() : null;
   const { data: apps } = await api("/api/me/apps");
   const appRow = (a) => h("li", { class: "app-row" },
     h("div", {}, h("span", { class: "strong" }, a.name), " ", h("span", { class: "muted" }, a.site)),
@@ -731,7 +737,6 @@ async function viewAccount(root) {
       ? h("section", {}, sectionHead("Billing"),
           h("div", { class: "inline-form" }, h("button", { class: "btn", type: "button", onclick: () => go("/api/billing/portal") }, "Manage subscription and invoices"), msg))
       : null,
-    admin,
     h("section", {},
       sectionHead("Connected apps"),
       apps.length
@@ -779,14 +784,94 @@ async function exportData() {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-async function adminPanel() {
-  const { data: a } = await api("/api/admin/stats");
-  return h("section", {}, sectionHead("Admin"),
+// ---------------------------------------------------------------- admin (ADMIN_EMAILS only)
+
+const ACCOUNT_SORTS = [["new", "Newest first"], ["seen", "Last seen"], ["emails", "Most emails"]];
+
+function planLabel(a) {
+  if (a.billing_plan === "lifetime") return "Pro, lifetime";
+  if (a.plan !== "pro") return "Free";
+  const until = a.plan_until ? new Date(a.plan_until * 1000).toLocaleDateString(undefined, { dateStyle: "medium" }) : "";
+  return a.cancel_at_period_end && until ? `Pro, ends ${until}` : "Pro";
+}
+
+/** Every account at a glance, for the operator. Counts only: the server sends no
+ * subjects, recipients or opens of anyone's emails. */
+async function viewAdmin(root, params) {
+  const tz = -new Date().getTimezoneOffset();
+  const q = params.get("q") || "";
+  const sort = params.get("sort") || "new";
+  const page = Math.max(0, Number(params.get("page") || 0));
+  const limit = 50;
+  const [{ data: a }, { data: accounts, total }] = await Promise.all([
+    api(`/api/admin/stats?${qs({ tz })}`),
+    api(`/api/admin/accounts?${qs({ q, sort, limit, offset: page * limit })}`),
+  ]);
+  const go = (patch) => { location.hash = `#/admin?${qs({ q, sort, ...patch })}`; };
+  const days = a.timeline.map((d) => ({ label: fmtDay(d.date), short: fmtDay(d.date), signups: d.signups, active: d.active, emails: d.emails }));
+  const uses = [...a.channels, { name: "Campaigns", accounts: a.campaigns_30d }];
+  const share = (n) => (a.seen_30d ? n / a.seen_30d : 0);
+
+  const search = h("input", { type: "search", placeholder: "Search by email", value: q, "aria-label": "Search accounts" });
+  search.addEventListener("keydown", (e) => { if (e.key === "Enter") go({ q: search.value.trim(), page: 0 }); });
+  const sortSel = h("select", { "aria-label": "Sort accounts", onchange: (e) => go({ sort: e.target.value, page: 0 }) },
+    ACCOUNT_SORTS.map(([v, l]) => h("option", { value: v, selected: v === sort }, l)));
+  const listed = `${total} account${total === 1 ? "" : "s"}`;
+
+  root.append(
+    h("section", { class: "headline" },
+      h("h1", {}, `${a.accounts} account${a.accounts === 1 ? "" : "s"}`, h("br"), h("span", { class: "rate" }, `${a.paying_now} paying`)),
+      h("p", {}, `${a.subscriptions} on a subscription and ${a.lifetime} lifetime, with ${a.lifetime_left} lifetime deals left. Only the addresses in ADMIN_EMAILS can open this page.`),
+    ),
     h("section", { class: "tiles" },
-      tile(a.accounts, "Accounts", `${a.signups_7d} new in 7 days`),
-      tile(a.paying_now, "Paying now", Object.entries(a.plans).map(([k, v]) => `${k} ${v}`).join(", ")),
-      tile(a.active_7d, "Active in 7 days", "sent a tracked email"),
-      tile(a.emails_24h, "Emails in 24 h", `${a.hits_24h} hits`)));
+      tile(a.signups_7d, "New in 7 days", `${a.signups_30d} in 30 days`),
+      tile(a.active_7d, "Active in 7 days", `${a.active_30d} in 30 days, by tracked emails`),
+      tile(a.emails_24h, "Emails in 24 h", `${a.emails_7d} in 7 days`),
+      tile(a.hits_24h, "Pixel loads in 24 h", "Opens, prefetches and self views"),
+    ),
+    h("section", { class: "split" },
+      h("div", {},
+        sectionHead("Last 30 days", legend([["signups", "New accounts"], ["actives", "Active accounts"]])),
+        barChart(days, [{ key: "signups", name: "new accounts", cls: "signups" }, { key: "active", name: "active accounts", cls: "actives" }], { height: 200, width: 760 }),
+        h("div", { style: { marginTop: "40px" } },
+          sectionHead("Emails tracked"),
+          barChart(days, [{ key: "emails", name: "emails", cls: "sent" }], { height: 160, width: 760 })),
+      ),
+      h("div", {},
+        sectionHead("What they use"),
+        h("div", { class: "table-wrap" },
+          h("table", { "aria-label": "What they use" },
+            h("thead", {}, h("tr", {}, ["Feature", "Accounts", "Share"].map((t) => h("th", {}, t)))),
+            h("tbody", {}, uses.map((u) =>
+              h("tr", {},
+                h("td", { class: "strong" }, u.name),
+                h("td", { class: "num" }, u.accounts),
+                h("td", {}, rateCell(share(u.accounts)))))))),
+        h("p", { class: "muted small", style: { marginTop: "12px" } },
+          `In the last 30 days, out of the ${a.seen_30d} accounts seen: they signed in, used a token or an app, or sent a tracked email. An agent token connects MCP or the CLI. Campaigns: tagged at least one email.`),
+      ),
+    ),
+    h("section", {},
+      sectionHead(q ? `${listed} matching "${q}"` : listed, h("div", { class: "filters" }, search, sortSel)),
+      accounts.length
+        ? h("div", { class: "table-wrap" },
+            h("table", { class: "accounts", "aria-label": "Accounts" },
+              h("thead", {}, h("tr", {}, ["Account", "Plan", "Signed up", "Last seen", "Emails, 30 days", "Emails, all time", "Uses"].map((t) => h("th", {}, t)))),
+              h("tbody", {}, accounts.map((x) =>
+                h("tr", {},
+                  h("td", { class: "strong ellipsis", title: x.email }, x.email),
+                  h("td", {}, planLabel(x)),
+                  h("td", { title: fmtDate(x.created_at) }, relTime(x.created_at)),
+                  h("td", { title: fmtDate(x.last_seen) }, relTime(x.last_seen)),
+                  h("td", { class: "num" }, x.emails_30d),
+                  h("td", { class: "num" }, x.emails),
+                  h("td", {}, x.uses.length ? h("div", { class: "uses" }, x.uses.map((u) => h("span", { class: "chip" }, u))) : h("span", { class: "muted" }, "Nothing")),
+                ))),
+            ))
+        : h("p", { class: "empty" }, "No accounts match."),
+      pager(page, limit, total, go),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------- sender health
@@ -892,6 +977,7 @@ async function render() {
     const frag = h("div", {});
     if (section === "connect") viewConnect(frag);
     else if (section === "account" && isCloud()) await viewAccount(frag);
+    else if (section === "admin" && state.me.admin) await viewAdmin(frag, params);
     else if (section === "senders") await viewSenders(frag);
     else if (section === "extension-connected") viewExtensionConnected(frag);
     else if (section === "campaigns") await viewCampaigns(frag);
