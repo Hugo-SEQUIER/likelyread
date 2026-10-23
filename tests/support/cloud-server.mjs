@@ -15,7 +15,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { FAKE, PEOPLE, TEST_APP } from "./cloud-fakes.mjs";
+import { FAKE, PEOPLE, REVIEWER, TEST_APP } from "./cloud-fakes.mjs";
 
 const args = process.argv.slice(2);
 const port = Number(args[args.indexOf("--port") + 1] || 8783);
@@ -79,6 +79,7 @@ const server = spawn(python, ["-m", "uvicorn", "app:create_app", "--factory", "-
     SESSION_SECRET: "e2e-session-secret-0123456789abcdef", GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: "x",
     GOOGLE_AUTH_URL: `${FAKE}/google/auth`, GOOGLE_TOKEN_URL: `${FAKE}/google/token`,
     ADMIN_EMAILS: PEOPLE.ann,
+    REVIEW_EMAIL: REVIEWER.email, REVIEW_PASSWORD: REVIEWER.password,
   },
 });
 

@@ -109,10 +109,10 @@ suppressions(
 | `GET` | `/api/senders` | bearer | **[added]** Addresses emails were sent from, with counts. |
 | `GET` | `/api/stats?campaign=&sender=&days=30&tz=` | bearer | **[added]** Dashboard KPIs, daily timeline (sent vs opens) and opens by hour, both over the last `days`; recent opens. `tz` is minutes east of UTC. |
 | `GET` | `/api/ping` | bearer | Auth and connectivity check, used by the extension's options page. |
-| `POST` | `/mcp` | bearer | **[added]** MCP endpoint for AI agents: streamable HTTP, stateless, plain JSON answers (the server never pushes). Same token, plans and limits as `/api/*`, through the same code. Tools: `account`, `new_pixel`, `text_to_html`, `track_email`, `list_emails`, `get_email`, `set_campaign`, `campaign_names`, `list_campaigns`, `get_stats`, `sender_health`; the server's instructions carry the agent skill's rules. |
+| `POST` | `/mcp` | bearer | **[added]** MCP endpoint for AI agents: streamable HTTP, stateless, plain JSON answers (the server never pushes). Same token, plans and limits as `/api/*`, through the same code. Tools: `account`, `new_pixel`, `text_to_html`, `track_email`, `list_emails`, `get_email`, `set_campaign`, `campaign_names`, `list_campaigns`, `get_stats`, `sender_health`; the server's instructions carry the agent skill's rules. On the cloud, apps that sign in get the results tools only, Claude Code apart ([docs/CLOUD.md](docs/CLOUD.md)). |
 | `GET` | `/healthz` | public | Liveness check. |
 
-**[added]** Likelyread Cloud (`MODE=cloud`, [docs/CLOUD.md](docs/CLOUD.md)) adds Google sign-in, billing and, for apps such as Claude and ChatGPT that connect to `/mcp` with a sign-in instead of a token, an OAuth 2.1 authorization server: `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/consent`, `/oauth/token` and `/oauth/revoke`. A self-hosted server has none of these and answers them 404.
+**[added]** Likelyread Cloud (`MODE=cloud`, [docs/CLOUD.md](docs/CLOUD.md)) adds Google sign-in, billing and, for apps such as Claude and ChatGPT that connect to `/mcp` with a sign-in instead of a token, an OAuth 2.1 authorization server: `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/consent`, `/oauth/token` and `/oauth/revoke`. While `REVIEW_EMAIL` and `REVIEW_PASSWORD` are set, `/auth/review` signs in the directory reviewers' test account with a password. A self-hosted server has none of these and answers them 404.
 
 Pixel response headers: `Cache-Control: no-store, no-cache, must-revalidate, private, max-age=0`, `Pragma: no-cache`, `Expires: 0`.
 
@@ -221,6 +221,7 @@ likelyread/
 │   ├── health.py           # [added] sender health
 │   ├── mcp_server.py       # [added] MCP endpoint for agents (/mcp)
 │   ├── oauth.py            # [added] Likelyread Cloud: OAuth sign-in for apps that connect to /mcp
+│   ├── review.py           # [added] Likelyread Cloud: password sign-in for the directory reviewers' test account
 │   ├── dashboard/          # [added] static dashboard (index.html, app.js, style.css)
 │   ├── tests/
 │   ├── Dockerfile

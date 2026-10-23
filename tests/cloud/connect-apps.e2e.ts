@@ -55,6 +55,8 @@ test('an app connects with a Google sign-in and an approve page, then is disconn
     resource: mcp,
   });
   await app.open(`/oauth/authorize?${ask}`);
+  // The reviewer sign-in is on (cloud-fakes.mjs), so the sign-in page offers Google first.
+  await screen.getByRole('link', 'Continue with Google').tap();
   await expect(screen.getByRole('heading', `Connect ${TEST_APP.name}`)).toBeVisible();
   await expect(screen.getByText('ann@example.com', { exact: false })).toBeVisible();
   await expect(screen.getByText('runs on this computer', { exact: false })).toBeVisible();
@@ -82,8 +84,14 @@ test('an app connects with a Google sign-in and an approve page, then is disconn
   expect(answer.status).toBe(200);
   const tokens = (await answer.json()) as { access_token: string; refresh_token: string; expires_in: number };
   expect(tokens.expires_in).toBe(3600);
-  const listed = (await (await listTools(base, tokens.access_token)).json()) as { result: { tools: unknown[] } };
-  expect(listed.result.tools).toHaveLength(11);
+  const listed = (await (await listTools(base, tokens.access_token)).json()) as {
+    result: { tools: { name: string }[] };
+  };
+  // An app that signs in reads results: no tool that tracks (Claude Code apart).
+  expect(listed.result.tools.map((t) => t.name).sort()).toEqual([
+    'account', 'campaign_names', 'get_email', 'get_stats', 'list_campaigns', 'list_emails', 'sender_health',
+    'set_campaign',
+  ]);
 
   // Account lists the app; Disconnect ends its access.
   await app.open('/#/account');

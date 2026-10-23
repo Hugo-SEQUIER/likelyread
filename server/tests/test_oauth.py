@@ -49,6 +49,9 @@ DOCS = {
     },
 }
 JSONRPC = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"}
+# What apps that sign in get, Claude Code apart (cloud.FULL_TOOL_APPS).
+RESULTS_TOOLS = {"account", "list_emails", "get_email", "set_campaign", "campaign_names", "list_campaigns",
+                 "get_stats", "sender_health"}
 
 
 @pytest.fixture
@@ -240,6 +243,7 @@ def test_claude_connects_and_its_token_works_at_mcp_only(client, google):
     assert "Connect Claude" in page.text and "<strong>claude.ai</strong>" in page.text
     assert "ann@example.com" in page.text and "go back to claude.ai" in page.text
     assert "runs on this computer" not in page.text
+    assert "It cannot track new emails." in page.text
     csp = page.headers["content-security-policy"]
     assert "form-action 'self' https://claude.ai;" in csp and "frame-ancestors 'none'" in csp
     assert page.headers["x-frame-options"] == "DENY" and page.headers["cache-control"] == "no-store"
@@ -257,7 +261,7 @@ def test_claude_connects_and_its_token_works_at_mcp_only(client, google):
     assert "scope" not in tokens
 
     listed = tools(client, tokens["access_token"])
-    assert listed.status_code == 200 and len(listed.json()["result"]["tools"]) == 11
+    assert listed.status_code == 200 and {t["name"] for t in listed.json()["result"]["tools"]} == RESULTS_TOOLS
     acct = client.post("/mcp", headers={**JSONRPC, **H(tokens["access_token"])}, json={
         "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "account", "arguments": {}}})
     assert json.loads(acct.json()["result"]["content"][0]["text"])["email"] == "ann@example.com"
@@ -271,6 +275,36 @@ def test_claude_connects_and_its_token_works_at_mcp_only(client, google):
     assert client.app.state.db.query("SELECT COUNT(*) AS n FROM tokens")[0]["n"] == 0, "no dashboard token was made"
 
 
+def names(c, token):
+    return {t["name"] for t in tools(c, token).json()["result"]["tools"]}
+
+
+def rpc(c, token, method, params):
+    r = c.post("/mcp", headers={**JSONRPC, **H(token)}, json={"jsonrpc": "2.0", "id": 1, "method": method,
+                                                             "params": params})
+    return r.json()
+
+
+def test_chat_apps_read_results_and_claude_code_gets_every_tool(client, google):
+    """Claude and ChatGPT cannot carry the pixel in the emails they send, so they get no tool
+    that tracks. Claude Code can, like an agent with a token."""
+    claude = connect(client, google)["access_token"]
+    chatgpt = connect(client, google, CHATGPT, CHATGPT_CB)["access_token"]
+    code = connect(client, google, CLAUDE_CODE, "http://127.0.0.1:33418/callback")["access_token"]
+    assert names(client, claude) == names(client, chatgpt) == RESULTS_TOOLS
+    assert names(client, code) == RESULTS_TOOLS | {"new_pixel", "text_to_html", "track_email"}
+
+    hello = {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}
+    rules = rpc(client, claude, "initialize", hello)["result"]["instructions"][:512]
+    assert 'say "opened", never "read"' in rules and "This connection cannot track new emails" in rules
+    assert "ask the user before tracking" in rpc(client, code, "initialize", hello)["result"]["instructions"]
+
+    sent = rpc(client, claude, "tools/call", {"name": "track_email", "arguments": {
+        "subject": "Hi", "to": "a@example.com", "sender": "me@example.com"}})
+    assert "error" in sent or sent["result"].get("isError"), sent
+    assert client.app.state.db.query("SELECT COUNT(*) AS n FROM emails")[0]["n"] == 0
+
+
 def test_chatgpt_connects_as_a_public_client(client, google):
     tokens = connect(client, google, CHATGPT, CHATGPT_CB)
     assert tools(client, tokens["access_token"]).status_code == 200
@@ -282,6 +316,7 @@ def test_claude_code_comes_back_on_any_local_port(client, google, redirect):
     verifier, challenge = pkce()
     page = sign_in(client, google, start(client, CLAUDE_CODE, redirect, challenge))
     assert "Connect Claude Code" in page.text and "runs on this computer" in page.text
+    assert "It can track the emails it sends for you" in page.text
     assert f"the app on this computer ({urllib.parse.urlsplit(redirect).netloc})" in page.text
     assert f"form-action 'self' {redirect.rsplit('/', 1)[0]};" in page.headers["content-security-policy"]
     back = answer(client, page)
@@ -708,3 +743,108 @@ def test_document_cache_lifetimes():
     assert oauth.cache_seconds("max-age=99999999") == oauth.DOC_CACHE_MAX
     assert oauth.cache_seconds("") == oauth.DOC_CACHE_DEFAULT
     assert oauth.cache_seconds("no-store") == 0
+
+
+# ---------------------------------------------------------------- the reviewer sign-in (review.py)
+
+REVIEWER, REVIEW_PASSWORD = "reviewer@likelyread.example", "correct horse battery staple"
+
+
+@pytest.fixture
+def review_client(env, clock, google, docs, monkeypatch):
+    monkeypatch.setenv("REVIEW_EMAIL", REVIEWER)
+    monkeypatch.setenv("REVIEW_PASSWORD", REVIEW_PASSWORD)
+    application = likelyread.create_app()
+    application.state.cloud.http = google
+    application.state.cloud.oauth.fetch = docs
+    with TestClient(application, base_url="https://testserver", follow_redirects=False) as c:
+        yield c
+
+
+def review(c, email=REVIEWER, password=REVIEW_PASSWORD, **headers):
+    return c.post("/auth/review", data={"email": email, "password": password}, headers=headers)
+
+
+def test_the_reviewer_sign_in_is_off_by_default(client):
+    assert client.get("/auth/review").status_code == 404
+    assert review(client).status_code in (404, 405)
+    assert client.get("/api/config").json()["review"] is False
+    assert start(client).status_code == 302, "an app goes straight to Google"
+
+
+@pytest.mark.parametrize("extra", [
+    {"REVIEW_EMAIL": REVIEWER},
+    {"REVIEW_PASSWORD": REVIEW_PASSWORD},
+    {"REVIEW_EMAIL": REVIEWER, "REVIEW_PASSWORD": "short"},
+    {"REVIEW_EMAIL": REVIEWER, "REVIEW_PASSWORD": REVIEW_PASSWORD, "ADMIN_EMAILS": REVIEWER},
+])
+def test_a_weak_or_risky_reviewer_setting_stops_the_server(env, monkeypatch, extra):
+    for k, v in extra.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(RuntimeError):
+        likelyread.create_app()
+
+
+def test_the_reviewer_gets_a_pro_account_with_sample_emails(review_client):
+    import review as review_mod
+
+    c = review_client
+    assert c.get("/api/config").json()["review"] is True
+    form = c.get("/auth/review")
+    assert form.status_code == 200 and 'action="/auth/review"' in form.text and 'href="/auth/google"' in form.text
+    assert "default-src 'none'" in form.headers["content-security-policy"]
+
+    for email, password in ((REVIEWER, "wrong password here!"), ("ann@example.com", REVIEW_PASSWORD), ("", "")):
+        r = review(c, email, password)
+        assert r.status_code == 401 and "Wrong email or password." in r.text
+    assert c.app.state.db.query("SELECT COUNT(*) AS n FROM accounts")[0]["n"] == 0
+
+    r = review(c, REVIEWER.upper())
+    assert r.status_code == 303 and r.headers["location"].startswith(f"{BASE}/#connect=")
+    token = r.headers["location"].split("#connect=", 1)[1]
+    me = c.get("/api/me", headers=H(token)).json()
+    assert me["email"] == REVIEWER and me["plan"] == "pro"
+    listed = c.get("/api/emails", headers=H(token))
+    emails = listed.json()
+    assert int(listed.headers["x-total-count"]) == len(emails) == len(review_mod.SAMPLE)
+    assert {"opened", "not_opened", "prefetch_only"} <= {e["status"] for e in emails}
+    assert all(r.endswith(".example") for e in emails for r in e["recipients"])
+
+    assert review(c).status_code == 303
+    again = c.get("/api/emails", headers=H(token))
+    assert int(again.headers["x-total-count"]) == len(review_mod.SAMPLE), "seeded once"
+    assert c.app.state.db.query("SELECT COUNT(*) AS n FROM accounts")[0]["n"] == 1
+
+
+def test_an_app_signs_in_with_the_reviewer_password(review_client):
+    c = review_client
+    verifier, challenge = pkce()
+    page = start(c, challenge=challenge)
+    assert page.status_code == 200 and 'action="/auth/review"' in page.text
+    google_link = re.search(r'class="btn primary google" href="([^"]+)"', page.text).group(1)
+    assert google_link.startswith("https://accounts.google.com/"), "Google stays one click away"
+
+    again = review(c, password="wrong password here!")
+    assert again.status_code == 401 and "Wrong email or password." in again.text
+    assert "lr_oauth" in again.headers.get("set-cookie", ""), "a new Google link and its state"
+
+    r = review(c)
+    assert r.status_code == 303 and r.headers["location"] == f"{BASE}/oauth/consent"
+    consent = c.get("/oauth/consent")
+    assert REVIEWER in consent.text and "It cannot track new emails." in consent.text
+    tokens = exchange(c, query(answer(c, consent))["code"], verifier).json()
+    assert names(c, tokens["access_token"]) == RESULTS_TOOLS
+
+
+def test_the_reviewer_sign_in_limits_attempts_and_other_sites(review_client):
+    import review as review_mod
+
+    c = review_client
+    assert c.get("/auth/review").headers["referrer-policy"] == "same-origin", "so the form sends its origin"
+    assert review(c, Origin="https://evil.example").status_code == 403
+    assert review(c, Origin="null").status_code == 403
+    assert review(c, Origin=BASE).status_code == 303
+    for _ in range(review_mod.ATTEMPTS_PER_MIN - 1):
+        assert review(c, password="wrong password here!").status_code == 401
+    r = review(c)
+    assert r.status_code == 429 and "Too many attempts" in r.text, "right or wrong, attempts count"
