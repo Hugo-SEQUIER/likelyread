@@ -103,6 +103,7 @@ function showLogin(message) {
   document.getElementById("login-error").textContent = message || "";
   const cloud = isCloud();
   document.getElementById("login-cloud").hidden = !cloud;
+  document.getElementById("login-review").hidden = !(cloud && state.config.review);
   document.getElementById("login-token").hidden = cloud;
   document.getElementById("token-input").required = !cloud;
   if (!cloud) document.getElementById("token-input").focus();

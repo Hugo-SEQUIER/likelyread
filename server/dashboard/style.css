@@ -203,6 +203,7 @@ tr.dimrow td { color: var(--muted); }
 .consent { list-style: disc; padding-left: 18px; display: grid; gap: 6px; }
 .consent-warn { background: var(--accent-tint); color: var(--accent-deep); padding: 12px 14px; font-weight: 500; }
 .login-card strong { font-weight: 600; overflow-wrap: anywhere; }
+.review-form { display: grid; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--surface-2); }
 
 /* cloud: plans and upsells */
 .upsell { background: var(--ink); color: #fff; padding: 28px; display: grid; gap: 14px; align-content: start; }

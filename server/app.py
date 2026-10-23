@@ -27,7 +27,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 
 import health
@@ -84,6 +84,8 @@ class Settings:
         self.dashboard = _env_bool("DASHBOARD", True)
         self.pixel_rate_per_min = int(_env_float("PIXEL_RATE_PER_MIN", 60))
         self.pixel_base = pixel_base(os.environ)
+        # OpenAI's plugin portal gives this token to prove the MCP server's domain.
+        self.openai_apps_challenge = os.environ.get("OPENAI_APPS_CHALLENGE", "").strip()
         if self.mode == "selfhost":
             if not self.token:
                 raise RuntimeError("LIKELYREAD_TOKEN is required. Generate one with: openssl rand -hex 32")
@@ -181,6 +183,7 @@ class Principal:
     plan: str  # selfhost | free | pro
     email: str | None = None
     agent: bool = False  # a cloud Agent token: tracking and results, never account actions
+    results_only: bool = False  # an app that signed in, Claude Code apart: the results tools only
 
     @property
     def features(self) -> dict:
@@ -904,9 +907,13 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     if cfg.mode == "cloud":
         import cloud as cloud_mod  # only loaded in cloud mode
         import oauth
+        import review
 
         cloud = cloud_mod.Cloud(db, cloud_mod.CloudSettings())
         cloud.oauth = oauth.OAuth(cloud)
+        reviewer = review.settings(os.environ)
+        if reviewer:
+            cloud.review = review.Review(cloud, *reviewer)
     api = Api(db, store, cloud, dns_cache)
     import mcp_server  # imports this module's models, so not at the top
 
@@ -926,7 +933,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
         task = asyncio.create_task(retention_loop())
         try:
-            async with agent_mcp.session_manager.run():
+            async with agent_mcp.run():
                 yield
         finally:
             task.cancel()
@@ -997,6 +1004,12 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
+
+    if cfg.openai_apps_challenge:
+
+        @app.get("/.well-known/openai-apps-challenge", include_in_schema=False)
+        def openai_apps_challenge():
+            return PlainTextResponse(cfg.openai_apps_challenge)
 
     @app.get("/api/config")
     def config():
@@ -1156,6 +1169,8 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     if cloud is not None:
         cloud.register_routes(app, principal)
         cloud.oauth.register_routes(app)
+        if cloud.review is not None:
+            cloud.review.register_routes(app)
 
     # ---- MCP endpoint for agents: same tokens, same rules as the API ---------
 

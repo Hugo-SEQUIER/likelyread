@@ -101,6 +101,9 @@ DASHBOARD_TOKEN_IDLE_SECONDS = 30 * 86400
 # of their own: an eleventh replaces the least recently used, never an agent token.
 APP_ACCESS_SECONDS = 3600
 MAX_APPS = 10
+# Apps that sign in get the results tools only (mcp_server.RESULTS_INSTRUCTIONS), apart from
+# these coding agents, which can send the pixel in the emails they write.
+FULL_TOOL_APPS = frozenset({"https://claude.ai/oauth/claude-code-client-metadata"})
 # Fallback paid period when a subscription event carries no readable period end.
 DEFAULT_PERIOD_SECONDS = 32 * 86400
 GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
@@ -231,6 +234,7 @@ class Cloud:
         self.http: Callable[[str, str, dict, bytes | None], tuple[int, dict]] = http_json
         # oauth.OAuth, set by app.py: an app's sign-in continues there after Google.
         self.oauth: Any = None
+        self.review: Any = None  # review.Review while the reviewer sign-in is on
         with db.lock:
             db.conn.executescript(SCHEMA)
             # Databases created before Stripe billing lack its two columns.
@@ -354,16 +358,18 @@ class Cloud:
         return self._grant(access, new)
 
     def authenticate_app(self, token: str) -> Principal | None:
-        """An app's access token, at /mcp. It can do what an agent token does: track
-        emails and read results, never account actions."""
+        """An app's access token, at /mcp, never for account actions. Claude Code's can do
+        what an agent token does; the other apps' read results only (FULL_TOOL_APPS)."""
         rows = self.db.query(
-            "SELECT p.access_until, a.* FROM apps p JOIN accounts a ON a.id = p.account_id WHERE p.access = ?",
+            "SELECT p.access_until, p.client_id, a.* FROM apps p JOIN accounts a ON a.id = p.account_id"
+            " WHERE p.access = ?",
             (token_hash(token),),
         )
         if not rows or rows[0]["access_until"] <= time.time():
             return None
         row = rows[0]
-        return Principal(account_id=row["id"], plan=self.effective_plan(row), email=row["email"], agent=True)
+        return Principal(account_id=row["id"], plan=self.effective_plan(row), email=row["email"], agent=True,
+                         results_only=row["client_id"] not in FULL_TOOL_APPS)
 
     def apps_of(self, account_id: str) -> list[dict]:
         rows = self.db.query(
@@ -387,6 +393,7 @@ class Cloud:
     def public_config(self) -> dict:
         return {
             "google": True,
+            "review": self.review is not None,
             "billing": self.cfg.billing_enabled,
             "prices": self.cfg.prices,
             "lifetime_left": self.lifetime_left(),
@@ -779,10 +786,12 @@ class Cloud:
             return f"status {status}"
         return "ignored"
 
-    def google_redirect(self, ext: str = "", app: dict | None = None) -> RedirectResponse:
+    def google_redirect(self, ext: str = "", app: dict | None = None, error: str = "", status: int = 200) -> Response:
         """Send the browser to Google's sign-in. ext is the Chrome extension that started
         it; app is an app's checked authorization request (oauth.py), which goes on to
-        the consent page after sign-in."""
+        the consent page after sign-in. With the reviewer sign-in on (review.py), an app's
+        sign-in shows a page with Google and the reviewer's form instead, with this error
+        and status."""
         cfg = self.cfg
         state = secrets.token_urlsafe(24)
         verifier = secrets.token_urlsafe(48)
@@ -799,7 +808,11 @@ class Cloud:
                 "prompt": "select_account",
             }
         )
-        resp = RedirectResponse(f"{cfg.google_auth_url}?{params}", status_code=302)
+        url = f"{cfg.google_auth_url}?{params}"
+        if app is not None and self.review is not None:
+            resp: Response = self.review.form(url, error, status)
+        else:
+            resp = RedirectResponse(url, status_code=302)
         saved: dict[str, Any] = {"state": state, "verifier": verifier, "ext": ext, "exp": time.time() + 600}
         if app is not None:
             saved["app"] = app
