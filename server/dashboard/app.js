@@ -635,7 +635,7 @@ function viewConnect(root) {
     cloud
       ? h("section", { "aria-label": "Claude and ChatGPT" },
           sectionHead("Claude and ChatGPT"),
-          h("p", { class: "muted agent-note" }, "Ask about your emails from a chat: who opened the proposal, who to follow up with this week. You sign in with Google and approve the app, so there is no token to copy. To send tracked emails, use Gmail with the Chrome extension, or an agent such as Hermes: Claude's Gmail connector removes the tracking image."),
+          h("p", { class: "muted agent-note" }, "Ask about your emails from a chat: who opened the proposal, who to follow up with this week. You sign in with Google and approve the app, so there is no token to copy. To send tracked emails, use Gmail with the Chrome extension, or an agent such as Hermes: email tools in these apps can remove the tracking image."),
           h("ol", { class: "connect-steps two" },
             step("1", "Claude", [
               h("p", {}, "Opens Claude with Likelyread filled in. Click Add, then Connect, and sign in with Google. It works on claude.ai and in Claude's desktop and mobile apps. On a Team or Enterprise plan, an Owner adds it for the organization first."),
