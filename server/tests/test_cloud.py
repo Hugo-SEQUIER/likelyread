@@ -532,12 +532,128 @@ def test_portal(client, fake):
     assert client.post("/api/billing/portal", headers=H(a)).status_code == 502
 
 
-def test_admin_stats_only_for_admins(client, fake):
+def test_admin_pages_only_for_an_admin_sign_in(client, fake):
     a = sign_in(client, fake)
-    assert client.get("/api/admin/stats", headers=H(a)).status_code == 404
     boss = sign_in(client, fake, "g-boss", "boss@likelyread.com")
+    agent = client.post("/api/me/agent-token", headers=H(boss)).json()["token"]
+    for path in ("/api/admin/stats", "/api/admin/accounts"):
+        assert client.get(path, headers=H(a)).status_code == 404
+        # Not even the admin's own agents: the account list is other people's data.
+        assert client.get(path, headers=H(agent)).status_code == 404
+        assert client.get(path, headers=H(boss)).status_code == 200
+    assert client.get("/api/me", headers=H(a)).json()["admin"] is False
+    assert client.get("/api/me", headers=H(agent)).json()["admin"] is False
+    assert client.get("/api/me", headers=H(boss)).json()["admin"] is True
+
+
+def test_admin_needs_the_whole_address_google_verified_on_every_request(client, fake):
+    assert client.get("/api/admin/stats").status_code == 401
+    lookalikes = ["xboss@likelyread.com", "boss@likelyread.com.evil.com", "boss+1@likelyread.com", "boss@likelyread.co"]
+    for i, email in enumerate(lookalikes):
+        t = sign_in(client, fake, f"g-look-{i}", email)
+        assert client.get("/api/admin/stats", headers=H(t)).status_code == 404, email
+    # An address Google has not verified cannot even sign in.
+    assert sign_in(client, fake, "g-fake-boss", "boss@likelyread.com", email_verified=False) is None
+    boss = sign_in(client, fake, "g-boss", "Boss@LikelyRead.com")  # capitals are the same address
+    assert client.get("/api/admin/stats", headers=H(boss)).status_code == 200
+    # An app connected by the admin works at /mcp only.
+    grant = client.app.state.cloud.connect_app(account_id(client, boss), "https://claude.ai/oauth/mcp-oauth-client-metadata", "Claude")
+    assert client.get("/api/admin/stats", headers=H(grant["access_token"])).status_code == 401
+    # The address is read on each request: once the Google account's changes, its old token loses the page.
+    sign_in(client, fake, "g-boss", "boss.new@likelyread.com")
+    assert client.get("/api/admin/stats", headers=H(boss)).status_code == 404
+
+
+def test_admin_emails_are_trimmed_and_lowercased_and_empty_means_nobody():
+    base = {"PUBLIC_URL": "https://app.likelyread.com", "SESSION_SECRET": SECRET, "GOOGLE_CLIENT_ID": CLIENT_ID, "GOOGLE_CLIENT_SECRET": "x"}
+    listed = cloud.CloudSettings({**base, "ADMIN_EMAILS": " Boss@LikelyRead.com , ,ops@likelyread.com "}).admin_emails
+    assert listed == {"boss@likelyread.com", "ops@likelyread.com"}
+    assert cloud.CloudSettings({**base, "ADMIN_EMAILS": " , "}).admin_emails == set()
+    assert cloud.CloudSettings(base).admin_emails == set()
+
+
+def test_admin_stats_count_accounts_activity_and_what_they_use(client, fake, clock):
+    cl = client.app.state.cloud
+    clock["now"] = NOW - 40 * 86400  # signed up and tracked an email, then left
+    old = sign_in(client, fake, "g-old", "old@example.com")
+    register(client, old)
+    clock["now"] = NOW - 10 * 86400
+    bob = sign_in(client, fake, "g-bob", "bob@example.com")
+    clock["now"] = NOW
+    boss = sign_in(client, fake, "g-boss", "boss@likelyread.com")
+    ann = sign_in(client, fake, "g-ann", "ann@example.com")
+    register(client, ann, campaign="Launch")
+    register(client, ann, age=2 * 86400)  # sent two days ago, registered now
+    register(client, bob)
+    cl.create_token(account_id(client, ann), "Chrome extension")
+    client.post("/api/me/agent-token", headers=H(bob))
+    cl.connect_app(account_id(client, ann), "https://claude.ai/oauth/mcp-oauth-client-metadata", "Claude")
+    webhook(client, "checkout.session.completed", _lifetime_session(account_id(client, bob)))
+    webhook(client, "customer.subscription.updated", _sub(account_id(client, ann), "sub_1"))
+
     s = client.get("/api/admin/stats", headers=H(boss)).json()
-    assert s["accounts"] == 2 and s["plans"] == {"free": 2}
+    assert s["accounts"] == 4
+    assert (s["paying_now"], s["subscriptions"], s["lifetime"], s["lifetime_left"]) == (2, 1, 1, 1)
+    assert (s["signups_7d"], s["signups_30d"]) == (2, 3)
+    assert (s["active_7d"], s["active_30d"], s["seen_30d"]) == (2, 2, 3)
+    assert (s["emails_24h"], s["emails_7d"], s["campaigns_30d"]) == (2, 3, 1)
+    # Old's sign-in is 40 days old, so it counts nowhere.
+    assert {c["name"]: c["accounts"] for c in s["channels"]} == {
+        "Dashboard": 3, "Chrome extension": 1, "Agent token": 1, "Claude (claude.ai)": 1,
+    }
+    today = time.strftime("%Y-%m-%d", time.gmtime(NOW))
+    assert len(s["timeline"]) == 30
+    assert s["timeline"][-1] == {"date": today, "signups": 2, "active": 2, "emails": 2}
+    assert s["timeline"][-3]["emails"] == 1 and s["timeline"][-11]["signups"] == 1
+    # NOW is 08:00 UTC: ten hours west it is still the day before, with the same counts.
+    west = client.get("/api/admin/stats?tz=-600", headers=H(boss)).json()
+    yesterday = time.strftime("%Y-%m-%d", time.gmtime(NOW - 86400))
+    assert west["timeline"][-1] == {"date": yesterday, "signups": 2, "active": 2, "emails": 2}
+
+
+def test_admin_accounts_list_plan_activity_and_uses(client, fake, clock):
+    cl = client.app.state.cloud
+    clock["now"] = NOW - 20 * 86400
+    boss = sign_in(client, fake, "g-boss", "boss@likelyread.com")
+    clock["now"] = NOW - 5 * 86400
+    bob = sign_in(client, fake, "g-bob", "bob_smith@example.com")
+    register(client, bob)
+    bob_id = account_id(client, bob)  # authenticates, so not later: it would count as seen
+    clock["now"] = NOW - 86400
+    ann = sign_in(client, fake, "g-ann", "ann@example.com")
+    for _ in range(3):
+        register(client, ann, subject="Private subject")
+    cl.create_token(account_id(client, ann), "Chrome extension")
+    cl.connect_app(account_id(client, ann), "https://claude.ai/oauth/mcp-oauth-client-metadata", "Claude")
+    clock["now"] = NOW
+    webhook(client, "customer.subscription.updated", _sub(bob_id, "sub_1", cancel_at_period_end=True))
+
+    def page(**params):
+        r = client.get("/api/admin/accounts", params=params, headers=H(boss))
+        assert r.status_code == 200
+        return [x["email"] for x in r.json()], int(r.headers["X-Total-Count"])
+
+    assert page() == (["ann@example.com", "bob_smith@example.com", "boss@likelyread.com"], 3)
+    assert page(sort="seen")[0] == ["boss@likelyread.com", "ann@example.com", "bob_smith@example.com"]
+    assert page(sort="emails")[0] == ["ann@example.com", "bob_smith@example.com", "boss@likelyread.com"]
+    assert page(limit=2, offset=2) == (["boss@likelyread.com"], 3)
+    assert page(q=" SMITH ") == (["bob_smith@example.com"], 1)
+    assert page(q="_") == (["bob_smith@example.com"], 1)  # a plain substring, not a LIKE pattern
+    assert client.get("/api/admin/accounts?sort=email", headers=H(boss)).status_code == 422
+
+    ann_row, bob_row, boss_row = client.get("/api/admin/accounts", headers=H(boss)).json()
+    # Who and how much, never what: no subjects, recipients or ids.
+    assert set(ann_row) == {
+        "email", "created_at", "plan", "billing_plan", "plan_until", "cancel_at_period_end",
+        "last_seen", "emails", "emails_30d", "uses",
+    }
+    assert "Private subject" not in json.dumps([ann_row, bob_row, boss_row])
+    assert (ann_row["emails"], ann_row["emails_30d"], ann_row["created_at"]) == (3, 3, NOW - 86400)
+    assert ann_row["uses"] == ["Chrome extension", "Dashboard", "Claude (claude.ai)"]
+    assert (ann_row["plan"], ann_row["last_seen"]) == ("free", NOW - 86400)
+    assert (bob_row["plan"], bob_row["billing_plan"], bob_row["cancel_at_period_end"]) == ("pro", "pro", True)
+    assert (bob_row["plan_until"], bob_row["last_seen"], bob_row["uses"]) == (PERIOD_END, NOW - 5 * 86400, ["Dashboard"])
+    assert (boss_row["emails"], boss_row["last_seen"], boss_row["uses"]) == (0, NOW, ["Dashboard"])
 
 
 def test_gmail_proxy_rate_limit_is_per_email(env, clock, fake, monkeypatch):

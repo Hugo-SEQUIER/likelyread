@@ -3,8 +3,8 @@ import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { TEST_APP } from '../support/cloud-fakes.mjs';
 
-// Likelyread Cloud on this computer (e2e.cloud.config.ts): fake Google signs everyone in
-// as ann@example.com, and the test app connects the way Claude does. It asks to connect,
+// Likelyread Cloud on this computer (e2e.cloud.config.ts): fake Google signs in as
+// ann@example.com, and the test app connects the way Claude does. It asks to connect,
 // the user signs in and approves on the consent page, the browser goes back to the app
 // with a code, and the app trades it for a token that works at /mcp.
 

@@ -19,9 +19,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
@@ -105,6 +106,9 @@ DEFAULT_PERIOD_SECONDS = 32 * 86400
 GOOGLE_ISSUERS = ("accounts.google.com", "https://accounts.google.com")
 WEBHOOK_TOLERANCE = 300
 EXTENSION_ID_RE = re.compile(r"^[a-p]{32}$")
+# The Admin page names each kind of sign-in token by where it was made.
+TOKEN_CHANNELS = {"Chrome extension": "Chrome extension", "Dashboard": "Dashboard", AGENT_LABEL: "Agent token"}
+ACCOUNT_ORDER = {"new": "a.created_at DESC", "seen": "last_seen DESC", "emails": "emails_30d DESC, last_seen DESC"}
 
 
 def _b64url(data: bytes) -> str:
@@ -117,6 +121,12 @@ def _b64url_decode(s: str) -> bytes:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def app_channel(client_id: str, name: str) -> str:
+    """An app connected with a sign-in, by its name and the host of its document: any
+    app can call itself Claude, only claude.ai serves Claude's document."""
+    return f"{name} ({urllib.parse.urlsplit(client_id).hostname})"
 
 
 def _period_end(sub: dict) -> float | None:
@@ -407,7 +417,7 @@ class Cloud:
             "billing": self.cfg.billing_enabled,
             "prices": self.cfg.prices,
             "lifetime_left": self.lifetime_left(),
-            "admin": row["email"] in self.cfg.admin_emails,
+            "admin": row["email"] in self.cfg.admin_emails and not p.agent,
             "agent_tokens": agents,
             "apps": apps,
         }
@@ -442,6 +452,135 @@ class Cloud:
             "DELETE FROM tokens WHERE label = 'Dashboard' AND COALESCE(last_used, created_at) < ?",
             (now - DASHBOARD_TOKEN_IDLE_SECONDS,),
         )
+
+    # ---- admin analytics (ADMIN_EMAILS only) -----------------------------
+
+    def admin_only(self, p: Principal) -> None:
+        """The Admin page is for the operator: a sign-in with an address in ADMIN_EMAILS.
+        Anyone else, the operator's own agents and apps included, gets a 404."""
+        if p.agent or (p.email or "") not in self.cfg.admin_emails:
+            raise HTTPException(status_code=404, detail="not found")
+
+    def analytics(self, tz: int = 0, days: int = 30) -> dict:
+        """Counts across every account, with a daily timeline in the viewer's time zone (tz:
+        minutes east of UTC). Active means sent a tracked email; seen also counts a sign-in
+        token or app used. Never the subjects, recipients or opens of anyone's emails."""
+        now = time.time()
+        q = lambda sql, args=(): self.db.query(sql, args)[0][0]  # noqa: E731
+        week, month = now - 7 * 86400, now - 30 * 86400
+        paying = [
+            r["plan"] for r in self.db.query("SELECT plan, plan_until FROM accounts WHERE plan != 'free'")
+            if self.effective_plan(r, now) == "pro"
+        ]
+        shift = tz * 60
+        today = datetime.fromtimestamp(now + shift, tz=timezone.utc).date()
+        timeline = {
+            d: {"date": d, "signups": 0, "active": 0, "emails": 0}
+            for d in ((today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1))
+        }
+        start = now - days * 86400  # reaches back past the first day's midnight
+        for r in self.db.query(
+            "SELECT date(created_at + ?, 'unixepoch') AS d, COUNT(*) AS n FROM accounts WHERE created_at >= ? GROUP BY d",
+            (shift, start),
+        ):
+            if r["d"] in timeline:
+                timeline[r["d"]]["signups"] = r["n"]
+        for r in self.db.query(
+            "SELECT date(sent_at + ?, 'unixepoch') AS d, COUNT(*) AS n, COUNT(DISTINCT account_id) AS a "
+            "FROM emails WHERE sent_at >= ? GROUP BY d",
+            (shift, start),
+        ):
+            if r["d"] in timeline:
+                timeline[r["d"]].update(emails=r["n"], active=r["a"])
+        channels = [
+            {"name": TOKEN_CHANNELS.get(r["label"], r["label"] or "Other"), "accounts": r["n"]}
+            for r in self.db.query(
+                "SELECT label, COUNT(DISTINCT account_id) AS n FROM tokens "
+                "WHERE COALESCE(last_used, created_at) >= ? GROUP BY label",
+                (month,),
+            )
+        ]
+        apps: dict[str, set] = {}
+        for r in self.db.query("SELECT client_id, name, account_id FROM apps WHERE last_used >= ?", (month,)):
+            apps.setdefault(app_channel(r["client_id"], r["name"]), set()).add(r["account_id"])
+        channels += [{"name": name, "accounts": len(ids)} for name, ids in apps.items()]
+        channels.sort(key=lambda c: (-c["accounts"], c["name"]))
+        return {
+            "accounts": q("SELECT COUNT(*) FROM accounts"),
+            "paying_now": len(paying),
+            "subscriptions": paying.count("pro"),
+            "lifetime": paying.count("lifetime"),
+            "lifetime_left": self.lifetime_left(),
+            "signups_7d": q("SELECT COUNT(*) FROM accounts WHERE created_at >= ?", (week,)),
+            "signups_30d": q("SELECT COUNT(*) FROM accounts WHERE created_at >= ?", (month,)),
+            "active_7d": q("SELECT COUNT(DISTINCT account_id) FROM emails WHERE sent_at >= ?", (week,)),
+            "active_30d": q("SELECT COUNT(DISTINCT account_id) FROM emails WHERE sent_at >= ?", (month,)),
+            "seen_30d": q(
+                "SELECT COUNT(*) FROM (SELECT account_id FROM tokens WHERE COALESCE(last_used, created_at) >= ? "
+                "UNION SELECT account_id FROM apps WHERE last_used >= ? "
+                "UNION SELECT account_id FROM emails WHERE account_id IS NOT NULL AND sent_at >= ?)",
+                (month, month, month),
+            ),
+            "emails_24h": q("SELECT COUNT(*) FROM emails WHERE sent_at >= ?", (now - 86400,)),
+            "emails_7d": q("SELECT COUNT(*) FROM emails WHERE sent_at >= ?", (week,)),
+            "hits_24h": q("SELECT COUNT(*) FROM hits WHERE ts >= ?", (now - 86400,)),
+            "campaigns_30d": q(
+                "SELECT COUNT(DISTINCT account_id) FROM emails WHERE sent_at >= ? AND campaign IS NOT NULL AND campaign != ''",
+                (month,),
+            ),
+            "channels": channels,
+            "timeline": list(timeline.values()),
+        }
+
+    def accounts_page(self, limit: int = 50, offset: int = 0, q: str = "", sort: str = "new") -> tuple[list[dict], int]:
+        """One page of accounts for the Admin page, with the total: plan, activity, email
+        counts and what each used in the last 30 days. q matches part of the address."""
+        now = time.time()
+        month = now - 30 * 86400
+        q = q.strip().lower()
+        where, args = ("WHERE instr(a.email, ?) > 0", [q]) if q else ("", [])
+        total = self.db.query(f"SELECT COUNT(*) FROM accounts a {where}", args)[0][0]
+        rows = self.db.query(
+            f"""SELECT a.id, a.email, a.created_at, a.plan, a.plan_until, a.cancel_at_period_end,
+                  (SELECT COUNT(*) FROM emails e WHERE e.account_id = a.id) AS emails,
+                  (SELECT COUNT(*) FROM emails e WHERE e.account_id = a.id AND e.sent_at >= ?) AS emails_30d,
+                  MAX(COALESCE((SELECT MAX(sent_at) FROM emails e WHERE e.account_id = a.id), 0),
+                      COALESCE((SELECT MAX(COALESCE(last_used, created_at)) FROM tokens t WHERE t.account_id = a.id), 0),
+                      COALESCE((SELECT MAX(last_used) FROM apps p WHERE p.account_id = a.id), 0)) AS last_seen
+                FROM accounts a {where} ORDER BY {ACCOUNT_ORDER[sort]}, a.rowid DESC LIMIT ? OFFSET ?""",
+            [month, *args, limit, offset],
+        )
+        ids = [r["id"] for r in rows]
+        labels: dict[str, set] = {i: set() for i in ids}
+        apps: dict[str, set] = {i: set() for i in ids}
+        if ids:
+            marks = ",".join("?" * len(ids))
+            for r in self.db.query(
+                f"SELECT account_id, label FROM tokens WHERE account_id IN ({marks}) AND COALESCE(last_used, created_at) >= ?",
+                [*ids, month],
+            ):
+                labels[r["account_id"]].add(r["label"])
+            for r in self.db.query(
+                f"SELECT account_id, client_id, name FROM apps WHERE account_id IN ({marks}) AND last_used >= ?",
+                [*ids, month],
+            ):
+                apps[r["account_id"]].add(app_channel(r["client_id"], r["name"]))
+        items = [
+            {
+                "email": r["email"],
+                "created_at": r["created_at"],
+                "plan": self.effective_plan(r, now),
+                "billing_plan": r["plan"],
+                "plan_until": r["plan_until"],
+                "cancel_at_period_end": bool(r["cancel_at_period_end"]),
+                "last_seen": r["last_seen"] or None,
+                "emails": r["emails"],
+                "emails_30d": r["emails_30d"],
+                "uses": [name for label, name in TOKEN_CHANNELS.items() if label in labels[r["id"]]] + sorted(apps[r["id"]]),
+            }
+            for r in rows
+        ]
+        return items, total
 
     # ---- signed short-lived cookie for the OAuth round trip --------------
 
@@ -872,26 +1011,23 @@ class Cloud:
             return {"ok": True, "result": result}
 
         @app.get("/api/admin/stats")
-        def admin_stats(p: Principal = Depends(principal)):
-            if (p.email or "") not in cfg.admin_emails:
-                raise HTTPException(status_code=404, detail="not found")
-            now = time.time()
-            q = lambda sql, args=(): self.db.query(sql, args)[0][0]  # noqa: E731
-            plans = {r["plan"]: r["n"] for r in self.db.query("SELECT plan, COUNT(*) AS n FROM accounts GROUP BY plan")}
-            active_pro = sum(
-                1 for r in self.db.query("SELECT plan, plan_until FROM accounts WHERE plan != 'free'")
-                if self.effective_plan(r, now) == "pro"
-            )
-            return {
-                "accounts": q("SELECT COUNT(*) FROM accounts"),
-                "plans": plans,
-                "paying_now": active_pro,
-                "signups_7d": q("SELECT COUNT(*) FROM accounts WHERE created_at >= ?", (now - 7 * 86400,)),
-                "active_7d": q(
-                    "SELECT COUNT(DISTINCT account_id) FROM emails WHERE account_id IS NOT NULL AND sent_at >= ?",
-                    (now - 7 * 86400,),
-                ),
-                "emails_24h": q("SELECT COUNT(*) FROM emails WHERE sent_at >= ?", (now - 86400,)),
-                "hits_24h": q("SELECT COUNT(*) FROM hits WHERE ts >= ?", (now - 86400,)),
-                "lifetime_left": self.lifetime_left(),
-            }
+        def admin_stats(
+            p: Principal = Depends(principal),
+            tz: int = Query(0, ge=-14 * 60, le=14 * 60, description="minutes east of UTC"),
+        ):
+            self.admin_only(p)
+            return self.analytics(tz)
+
+        @app.get("/api/admin/accounts")
+        def admin_accounts(
+            response: Response,
+            p: Principal = Depends(principal),
+            limit: int = Query(50, ge=1, le=200),
+            offset: int = Query(0, ge=0),
+            q: str = Query("", max_length=320),
+            sort: str = Query("new", pattern="^(new|seen|emails)$"),
+        ):
+            self.admin_only(p)
+            items, total = self.accounts_page(limit, offset, q, sort)
+            response.headers["X-Total-Count"] = str(total)
+            return items

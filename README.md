@@ -227,9 +227,9 @@ CHROME_PATH=/path/to/chrome PYTHON=../server/.venv/bin/python npm run e2e
 # the built extension as Chrome lists it (name and version), with the e2e package:
 # tests/extension-listing.e2e.ts and e2e.config.ts at the repository root
 cd .. && npm install && npx e2e run tests/extension-listing.e2e.ts
-# Likelyread Cloud's Connect and Account pages and an app's OAuth sign-in, against a local
-# cloud with fake Google (needs server/.venv): e2e.cloud.config.ts and tests/cloud/
-npx e2e run --config e2e.cloud.config.ts tests/cloud/connect-apps.e2e.ts
+# Likelyread Cloud's Connect, Account and Admin pages and an app's OAuth sign-in, against a
+# local cloud with fake Google (needs server/.venv): e2e.cloud.config.ts and tests/cloud/
+npx e2e run --config e2e.cloud.config.ts
 
 # agent CLI
 cd cli

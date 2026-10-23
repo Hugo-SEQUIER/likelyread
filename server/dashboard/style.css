@@ -102,6 +102,14 @@ input[type="checkbox"] { height: auto; accent-color: var(--accent); }
 .sw { width: 10px; height: 10px; display: inline-block; }
 .sw.sent { background: #d6d6d6; }
 .sw.opens { background: var(--accent); }
+/* admin: new and active accounts */
+.chart .signups { fill: var(--accent); }
+.chart .actives { fill: #d6d6d6; }
+.sw.signups { background: var(--accent); }
+.sw.actives { background: #d6d6d6; }
+/* one line per account: on a phone the table scrolls sideways instead */
+table.accounts td { white-space: nowrap; }
+.uses { display: flex; gap: 4px; }
 
 /* bands (recent opens) */
 .bands { display: grid; gap: 4px; }

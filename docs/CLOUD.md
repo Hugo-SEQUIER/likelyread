@@ -91,7 +91,7 @@ Everything below is a one-time setup on the cloud server.
    ```
    Copy `deploy/data/backups/` off the machine as well, for example with `rclone` to Cloudflare R2.
 6. **Extension id.** Uploading the draft to the Chrome Web Store assigns the extension its id. Put that id in `EXTENSION_IDS` and restart the server. Only listed extensions receive the token after sign-in. Until then, the sign-in page asks the user to paste their setup link instead.
-7. **Admin.** Put your email in `ADMIN_EMAILS`. Your Account page then shows accounts, paying users, weekly actives, and emails and hits in the last 24 h.
+7. **Admin.** Put your email in `ADMIN_EMAILS` (separate several with commas) and run `docker compose up -d` again, so the server reads it. Signed in with that address, the dashboard shows an **Admin** tab: accounts and paying users, new and active accounts with 30-day charts, tracked emails and pixel loads, what people use (the Chrome extension, the dashboard, agent tokens, each app connected with a sign-in, campaigns), and every account with its plan, sign-up, last activity and email counts. It never shows the subjects, recipients or opens of anyone's emails. The page is as safe as the Google account of each address listed, so turn on 2-Step Verification for those accounts.
 
 ## How it works
 
@@ -130,16 +130,21 @@ Everything below is a one-time setup on the cloud server.
 - **Data rights:**
   - *Export.* `GET /api/me/export` returns everything held for the account, including emails older than the Free history window. Data portability covers all of the user's data, so the export is not gated by plan.
   - *Deletion.* `DELETE /api/me` removes the account and all of its data.
+- **Admin page:**
+  - *Who sees it.* Only a sign-in whose address is in `ADMIN_EMAILS`: `GET /api/me` then says `"admin": true`, and the dashboard shows the **Admin** tab. The address is the one Google verified at the account's latest sign-in. It must match a listed address in full (case and surrounding spaces aside), and the server checks it on every request. `GET /api/admin/stats` and `GET /api/admin/accounts` answer 404 to anyone else, the admin's own agent tokens included. Apps connected with a sign-in get 401, as everywhere in the API.
+  - *What it counts.* `GET /api/admin/stats?tz=` returns accounts, paying accounts (subscriptions and lifetime), lifetime deals left, sign-ups, active accounts (they sent a tracked email), tracked emails, pixel loads, and a 30-day timeline in the viewer's time zone (`tz`, minutes east of UTC). *What they use* covers the last 30 days. It counts the accounts that used each kind of sign-in token (Chrome extension, Dashboard, Agent token), each connected app (its name and the host of its client document, since any app can call itself Claude), and campaigns. Each count is a share of the accounts seen: they signed in, used a token or an app, or sent a tracked email.
+  - *Accounts.* `GET /api/admin/accounts?q=&sort=new|seen|emails&limit=&offset=` lists 50 accounts at a time, with the total in `X-Total-Count`. Each row has the address, plan, sign-up, last seen, emails in the last 30 days and in all, and what the account used in the last 30 days. `q` matches part of the address.
+  - *Limits.* The page reads only what the server already keeps. Tokens and app connections disappear when the user signs out everywhere or revokes them, and when they lapse, so an account's channels can drop out of the counts. The server never sends the page the subjects, recipients or opens of anyone's emails.
 
 ## Tests
 
 ```bash
 cd server && python -m pytest -q                      # includes tests/test_cloud.py and tests/test_oauth.py
 cd extension && CHROME_PATH=... PYTHON=... npm run e2e:cloud
-npx e2e run --config e2e.cloud.config.ts tests/cloud/connect-apps.e2e.ts   # from the repository root
+npx e2e run --config e2e.cloud.config.ts   # from the repository root: every test in tests/cloud/
 ```
 
-`tests/test_oauth.py` runs the OAuth flow for Claude, Claude Code and ChatGPT with copies of their client metadata documents, every refusal, refresh and revocation, the guards on fetching documents, and the MCP SDK's own OAuth client against a live server. `tests/cloud/connect-apps.e2e.ts` (the `e2e` package, with fake Google and a test app from `tests/support/cloud-server.mjs`) drives the Connect page, an app's sign-in through the consent page to a working `/mcp` token, and **Disconnect** on the Account page.
+`tests/test_oauth.py` runs the OAuth flow for Claude, Claude Code and ChatGPT with copies of their client metadata documents, every refusal, refresh and revocation, the guards on fetching documents, and the MCP SDK's own OAuth client against a live server. The tests in `tests/cloud/` use the `e2e` package, with fake Google and a test app from `tests/support/cloud-server.mjs`. Fake Google signs in Ann, the admin, or Bob when the browser carries the cookie `e2e_person=bob`. `connect-apps.e2e.ts` drives the Connect page, an app's sign-in through the consent page to a working `/mcp` token, and **Disconnect** on the Account page. `admin.e2e.ts` checks the Admin page's counts, sort and search for Ann, and that Bob and Ann's agent token get no Admin tab and a 404.
 
 `e2e:cloud` runs real Chromium with the extension built for a local cloud, plus fake Google and fake Stripe servers. It covers the following:
 

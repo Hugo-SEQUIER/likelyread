@@ -1,6 +1,7 @@
 // Starts a local Likelyread Cloud for the e2e run (e2e.cloud.config.ts), with the two
 // outside services it talks to replaced, on FAKE_PORT:
-//   - Google sign-in, which signs everyone in as ann@example.com at once;
+//   - Google sign-in, which signs in at once as ann@example.com, the admin, or as
+//     bob@example.com when the browser carries the cookie e2e_person=bob;
 //   - an app that connects over OAuth the way Claude Code does: its client metadata
 //     document, and the loopback page Likelyread sends the browser back to.
 // The server runs on 127.0.0.1, so it accepts that app's document on this computer.
@@ -14,7 +15,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { FAKE, TEST_APP } from "./cloud-fakes.mjs";
+import { FAKE, PEOPLE, TEST_APP } from "./cloud-fakes.mjs";
 
 const args = process.argv.slice(2);
 const port = Number(args[args.indexOf("--port") + 1] || 8783);
@@ -31,8 +32,10 @@ const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
 const fakes = createServer(async (req, res) => {
   const u = new URL(req.url, FAKE);
   if (u.pathname === "/google/auth") {
+    // A cookie reaches every port of 127.0.0.1, so a test sets it for FAKE.
+    const named = /(?:^|;\s*)e2e_person=(\w+)/.exec(req.headers.cookie || "")?.[1];
     const back = new URL(u.searchParams.get("redirect_uri"));
-    back.searchParams.set("code", "good-code");
+    back.searchParams.set("code", `good-code-${named && Object.hasOwn(PEOPLE, named) ? named : "ann"}`);
     back.searchParams.set("state", u.searchParams.get("state"));
     res.writeHead(302, { location: back.toString() });
     return res.end();
@@ -40,11 +43,12 @@ const fakes = createServer(async (req, res) => {
   if (u.pathname === "/google/token" && req.method === "POST") {
     let body = "";
     for await (const chunk of req) body += chunk;
-    if (new URLSearchParams(body).get("code") !== "good-code") {
+    const who = /^good-code-(\w+)$/.exec(new URLSearchParams(body).get("code") || "")?.[1];
+    if (!who || !Object.hasOwn(PEOPLE, who)) {
       res.writeHead(400, { "content-type": "application/json" });
       return res.end("{}");
     }
-    const claims = { iss: "https://accounts.google.com", aud: CLIENT_ID, sub: "google-ann", email: "ann@example.com", email_verified: true, exp: Math.floor(Date.now() / 1000) + 600 };
+    const claims = { iss: "https://accounts.google.com", aud: CLIENT_ID, sub: `google-${who}`, email: PEOPLE[who], email_verified: true, exp: Math.floor(Date.now() / 1000) + 600 };
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify({ id_token: `${b64url({ alg: "RS256" })}.${b64url(claims)}.sig` }));
   }
@@ -74,6 +78,7 @@ const server = spawn(python, ["-m", "uvicorn", "app:create_app", "--factory", "-
     MODE: "cloud", DB_PATH: path.join(work, "cloud.db"), PUBLIC_URL: CLOUD,
     SESSION_SECRET: "e2e-session-secret-0123456789abcdef", GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: "x",
     GOOGLE_AUTH_URL: `${FAKE}/google/auth`, GOOGLE_TOKEN_URL: `${FAKE}/google/token`,
+    ADMIN_EMAILS: PEOPLE.ann,
   },
 });
 
