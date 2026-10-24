@@ -27,7 +27,8 @@ Likelyread tells you when the emails you send from Gmail™ are opened, and why 
 Most trackers count every image load as an open. Likelyread sets aside your own views and Apple Mail's automatic downloads, and shows the reason behind every verdict, so the opens you see are the ones that count.
 
 What you get:
-- A red eye next to Send: tracking on or off for each email
+- A red eye next to Send: tracking on or off for each email, and a note after each send that confirms it is tracked
+- Ticks on the emails you sent, right in Gmail: one grey tick while nobody has opened it, two red ticks once someone has
 - A campaign picker in the compose window: choose or create a campaign without leaving Gmail
 - The address you sent from, including send-as aliases
 - A toolbar popup with every tracked email and its status
@@ -103,10 +104,10 @@ Reviewers can use Likelyread Cloud with their own Google account; nothing else i
 1. Install the extension. Its settings page opens.
 2. Click "Sign in with Google" and pick any Google account. The tab that opens says "Extension connected". Close it.
 3. Open Gmail and write an email to an address you can read elsewhere (a second account or your phone). A red eye and a campaign menu appear next to Send. Send it.
-4. Open that email as the recipient. Within a minute, the extension's toolbar popup shows "Opened" for it. Click the row to see each hit and why it counted.
+4. Open that email as the recipient. Back in the sender's Gmail, open the sent email: within a minute, two red ticks next to its date say "Opened". The extension's toolbar popup shows "Opened" for it too. Click the row to see each hit and why it counted.
 5. https://app.likelyread.com shows the dashboard (Overview, Campaigns, Emails, Account). Campaign analytics are part of the paid Pro plan; the Free plan shows an upgrade card there. Paid plans are sold on our website through Stripe, not through the extension.
 
-Note: opening the email in the sender's own Gmail account is deliberately not counted as an open; the hit is marked "Self view".
+Note: opening the email in the sender's own Gmail account is deliberately not counted as an open; the hit is marked "Self view", and an email sent to yourself shows "Seen by you only".
 ```
 
 To show the self-hosted path too, add a line with the reviewer server's setup link ("Use my own server instead" in the settings). It contains a token, so it stays out of this repository; print it with `sudo bash /root/likelyread-review/deploy/install.sh --show-link --dir /root/likelyread-review`. For a reviewer to see Pro features, set their account to lifetime from the server after they sign in.

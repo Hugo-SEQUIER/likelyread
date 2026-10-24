@@ -17,6 +17,10 @@ Two ways to use it:
    - **self**: your own compose preview or your own view of the sent email (the extension tells the server, and also blocks the request in your browser);
    - **prefetch**: Apple Mail Privacy Protection loading images on delivery (bare `Mozilla/5.0` user agent from Apple's network);
    - **open**: everything else.
+4. You see the result where you look:
+   - **in Gmail**, next to the date of each tracked email you sent, when you open the conversation: one grey tick while nobody has opened it (*Not opened yet*, *Seen by you only*, *Prefetch only*), two red ticks once someone has (*Opened ×2*). Hover for when; click to open the email in the dashboard;
+   - **in the toolbar popup**, the last 50 tracked emails with their status;
+   - **on the dashboard**, everything (see below).
 
 See [SPEC.md](SPEC.md) for the full contract.
 
@@ -40,7 +44,7 @@ https://t.yourcompany.com/#connect=<your token>
 
 Treat it like a password. You can print it again any time with `sudo bash /opt/likelyread/deploy/install.sh --show-link`, and it is on the dashboard under **Connect**.
 
-**3. Connect the extension.** Install the Chrome extension, open its settings, paste the setup link and click **Save**. Write an email in Gmail: the red eye next to Send means it is tracked.
+**3. Connect the extension.** Install the Chrome extension, open its settings, paste the setup link and click **Save**. Write an email in Gmail: the red eye next to Send means it is tracked, and after you send it a note at the bottom left says *Tracked by Likelyread*. To try it, send it to another address you can open, such as a second account or your phone: your own views never count, so an email you send yourself stays *Seen by you only*.
 
 Get the extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/likelyread-email-open-tra/gbpbnkffdkbjgjnmgdlicbpgpaompmdd). To run your own build instead: `cd extension && npm install && npm run build`, then in `chrome://extensions` turn on **Developer mode**, click **Load unpacked** and pick `extension/dist`.
 
@@ -191,7 +195,7 @@ An "open" means the tracking image loaded on the recipient's side. That is what 
 | Images blocked by default | Some Outlook and corporate setups block images, so real opens are missed. |
 | One pixel per email | With several recipients you can't tell who opened it. |
 | Forwarding | Opens by people the email was forwarded to count as opens. |
-| Gmail DOM changes | Can break injection. All Gmail selectors live in `extension/src/gmail-selectors.ts`, and failures are safe: the email is sent untracked. |
+| Gmail DOM changes | Can break injection or hide the ticks. All Gmail selectors live in `extension/src/gmail-selectors.ts`, and failures are safe: the email is sent untracked, and no ticks show. |
 | Self-views | The extension blocks your own browser from loading your pixel directly, and when you open a message **you sent** in Gmail it tells the server, so the next 60 s count as self. Messages you received are never suppressed, so a recipient opening your email in this same browser still counts. |
 | Deliverability | A fresh domain plus hidden images can raise spam scores. Use HTTPS and a domain with some history. |
 
@@ -218,15 +222,17 @@ python scripts/seed_demo.py ./demo.db
 # extension
 cd extension
 npm install
-npm test          # unit tests + compose tests against a fake Gmail DOM
+npm test          # unit tests + compose and ticks tests against a fake Gmail DOM
 npm run typecheck
 npm run build     # outputs dist/
 # end to end: real Chromium with the built extension, a fake Gmail on
 # mail.google.com and a real server (send, campaign, sender, server down, bad token)
 CHROME_PATH=/path/to/chrome PYTHON=../server/.venv/bin/python npm run e2e
-# the built extension as Chrome lists it (name and version), with the e2e package:
-# tests/extension-listing.e2e.ts and e2e.config.ts at the repository root
-cd .. && npm install && npx e2e run tests/extension-listing.e2e.ts
+# with the e2e package, from the repository root (e2e.config.ts; each test gets a fresh
+# Chromium with the built extension): tests/extension-listing.e2e.ts checks the name and
+# version Chrome lists, tests/gmail-receipts.e2e.ts the ticks, the send note and the
+# popup against a fake Gmail and a fake server (tests/support/fake-likelyread.ts)
+cd .. && npm install && npx e2e run
 # Likelyread Cloud's Connect, Account and Admin pages and an app's OAuth sign-in, against a
 # local cloud with fake Google (needs server/.venv): e2e.cloud.config.ts and tests/cloud/
 npx e2e run --config e2e.cloud.config.ts

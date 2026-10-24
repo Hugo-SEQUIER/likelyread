@@ -13,6 +13,12 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string | null, .
 function chip(e: EmailSummary): HTMLElement {
   if (e.status === "opened") return h("span", "chip open", `Opened ×${e.opens}`, h("small", null, ` ${relTime(e.last_open)}`));
   if (e.status === "prefetch_only") return h("span", "chip dim", "Prefetch only");
+  if (e.self > 0) {
+    // Usually a test sent to yourself: your own views never count.
+    const own = h("span", "chip", "Seen by you only");
+    own.title = "Only you have viewed it, and your own views never count. To test, send to another address and open it there.";
+    return own;
+  }
   return h("span", "chip", "Not opened");
 }
 

@@ -1,6 +1,7 @@
 /** Content script on mail.google.com: wires ComposeTracker to the extension. */
 import { ComposeTracker, extractEmail } from "./compose";
-import type { ContentConfig, Message } from "./shared";
+import { Receipts } from "./receipts";
+import type { ContentConfig, Message, StatusReply } from "./shared";
 
 let config: ContentConfig = {
   configured: false,
@@ -48,6 +49,13 @@ const tracker = new ComposeTracker(document, {
   now: () => Date.now(),
 });
 
+const receipts = new Receipts(document, {
+  getConfig: tabConfig,
+  accountEmail,
+  status: async (ids) => ((await send({ type: "status", ids })) as StatusReply | undefined) ?? {},
+  now: () => Date.now(),
+});
+
 let scheduled = false;
 function scheduleScan(): void {
   if (scheduled) return;
@@ -57,6 +65,7 @@ function scheduleScan(): void {
   setTimeout(() => {
     scheduled = false;
     tracker.scan();
+    receipts.scan();
   }, 30);
 }
 
@@ -76,6 +85,7 @@ chrome.runtime.onMessage.addListener((msg: Message, sender) => {
   if (sender.id !== chrome.runtime.id || msg.type !== "configChanged") return;
   void refreshConfig().then(() => {
     tracker.refresh();
+    receipts.refresh();
     scheduleScan();
   });
 });

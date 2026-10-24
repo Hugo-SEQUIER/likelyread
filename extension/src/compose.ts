@@ -24,6 +24,7 @@ export interface ComposeDeps {
 
 const ENHANCED = "likelyreadEnhanced";
 export const CONTROL_CLASS = "lr-control";
+const TOAST_MS = 6000;
 
 interface ComposeState {
   root: HTMLElement;
@@ -58,6 +59,7 @@ export class ComposeTracker {
   private lastRegistered = new Map<string, number>();
   private lastSuppressed = new Map<string, number>();
   private popover: { el: HTMLElement; state: ComposeState; cleanup: () => void } | null = null;
+  private toast: { el: HTMLElement; timer: number } | null = null;
 
   constructor(private doc: Document, private deps: ComposeDeps) {}
 
@@ -347,10 +349,14 @@ export class ComposeTracker {
     if (found) this.onSend(found[0], found[1]);
   }
 
-  /** Inject the pixel and queue registration. Never blocks or cancels the send. */
+  /** Inject the pixel, queue registration and say so. Never blocks or cancels the send. */
   onSend(body: HTMLElement, state: ComposeState): void {
     const cfg = this.deps.getConfig();
-    if (!state.enabled || !cfg.configured) return;
+    if (!state.enabled) return;
+    if (!cfg.configured) {
+      this.confirm("Not tracked: Likelyread is not set up. Click its icon in Chrome's toolbar to sign in.");
+      return;
+    }
     let id = state.pixelId && this.hasPixel(body, state.pixelId) ? state.pixelId : this.pixelIn(body);
     if (!id) {
       id = this.deps.newId();
@@ -377,6 +383,10 @@ export class ComposeTracker {
       campaign: state.campaign || null,
       sender: this.senderOf(state.root),
       sentAtMs: now,
+    });
+    this.confirm(state.campaign ? `Tracked by Likelyread · ${state.campaign}` : "Tracked by Likelyread", {
+      href: `${cfg.serverUrl}/`,
+      label: "Open dashboard",
     });
   }
 
@@ -434,36 +444,47 @@ export class ComposeTracker {
 
   // ---------------------------------------------------------------- self-views
 
-  /**
-   * One of our own sent emails is open in a conversation: tell the server it is us.
-   * Only when the message's sender is this account (or an address we sent from).
-   * The same pixel shown to a recipient, even in this browser, is a real open.
-   */
+  /** One of our own sent emails is open in a conversation: tell the server it is us. */
   private scanForOwnPixels(): void {
-    const cfg = this.deps.getConfig();
-    const server = cfg.serverUrl;
-    if (!server) return;
-    const host = new URL(server).host;
     const now = this.deps.now();
-    for (const img of Array.from(this.doc.querySelectorAll<HTMLImageElement>("img"))) {
-      const src = img.getAttribute("src") || "";
-      if (!src.includes(host)) continue;
-      if (img.closest('[contenteditable="true"]')) continue; // compose, handled by the grace window
-      const id = extractPixelId(src, server);
-      if (!id || !this.isOwnMessage(img, cfg)) continue;
+    for (const { id } of ownPixels(this.doc, this.deps.getConfig(), this.deps.accountEmail())) {
       if (now - (this.lastSuppressed.get(id) ?? 0) < 20_000) continue;
       this.lastSuppressed.set(id, now);
       this.deps.suppress(id);
     }
   }
 
-  private isOwnMessage(img: HTMLElement, cfg: ContentConfig): boolean {
-    const own = new Set([...cfg.senders, this.deps.accountEmail() || ""].filter(Boolean).map((s) => s.toLowerCase()));
-    const message = img.closest(SEL.messageContainer);
-    const sender = message?.querySelector(SEL.messageSender)?.getAttribute("email")?.toLowerCase();
-    if (sender) return own.has(sender);
-    // No sender line found: only treat it as ours inside the Sent folder.
-    return /^#sent\b/.test(this.doc.defaultView?.location.hash || "");
+  // ---------------------------------------------------------------- send confirmation
+
+  /** A short note above Gmail's own "Message sent", so it is plain whether the email is tracked. */
+  private confirm(text: string, link?: { href: string; label: string }): void {
+    const win = this.doc.defaultView!;
+    if (!this.toast?.el.isConnected) {
+      const el = this.doc.createElement("div");
+      el.className = "lr-toast";
+      el.setAttribute("role", "status");
+      el.hidden = true;
+      // Keep Gmail from reacting to clicks inside it.
+      for (const type of ["mousedown", "click"]) el.addEventListener(type, (e) => e.stopPropagation());
+      this.doc.body.append(el);
+      this.toast = { el, timer: 0 };
+    }
+    const toast = this.toast!;
+    const message = this.doc.createElement("span");
+    message.textContent = text;
+    const parts: Node[] = [message];
+    if (link) {
+      const a = this.doc.createElement("a");
+      a.href = link.href;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = link.label;
+      parts.push(a);
+    }
+    toast.el.replaceChildren(...parts);
+    toast.el.hidden = false;
+    win.clearTimeout(toast.timer);
+    toast.timer = win.setTimeout(() => (toast.el.hidden = true), TOAST_MS);
   }
 
   private safe(fn: () => void): void {
@@ -473,6 +494,39 @@ export class ComposeTracker {
       console.warn("[likelyread] ignored error (email sending is unaffected):", err);
     }
   }
+}
+
+/**
+ * Pixels of our own sent emails shown in an opened conversation, each with the
+ * message it sits in. Only messages whose sender is this account (or an address
+ * we sent from) count: the same pixel shown to a recipient, even in this browser,
+ * is a real open. Compose windows are left out; the grace window covers them.
+ */
+export interface OwnPixel {
+  id: string;
+  img: HTMLImageElement;
+  /** The conversation message holding it, when Gmail's markup shows one. */
+  message: Element | null;
+}
+
+export function ownPixels(doc: Document, cfg: ContentConfig, account: string | null): OwnPixel[] {
+  const server = cfg.serverUrl;
+  if (!server) return [];
+  const host = new URL(server).host;
+  const own = new Set([...cfg.senders, account || ""].filter(Boolean).map((s) => s.toLowerCase()));
+  const inSent = /^#sent\b/.test(doc.defaultView?.location.hash || "");
+  const found: OwnPixel[] = [];
+  for (const img of Array.from(doc.querySelectorAll<HTMLImageElement>("img"))) {
+    const src = img.getAttribute("src") || "";
+    if (!src.includes(host) || img.closest('[contenteditable="true"]')) continue;
+    const id = extractPixelId(src, server);
+    if (!id) continue;
+    const message = img.closest(SEL.messageContainer);
+    const sender = message?.querySelector(SEL.messageSender)?.getAttribute("email")?.toLowerCase();
+    // No sender line found: only treat it as ours inside the Sent folder.
+    if (sender ? own.has(sender) : inSent) found.push({ id, img, message });
+  }
+  return found;
 }
 
 /** The compose window: Gmail's div.M9, else the smallest ancestor that also holds a Send button. */

@@ -23,4 +23,6 @@ test('a reviewer signs in with the test account and finds sample emails', { retr
   await expect(screen.getByText('62% open rate', { exact: false })).toBeVisible();
   await screen.getByRole('link', 'Emails').tap();
   await expect(screen.getByText('Pilot pricing for your team')).toBeVisible();
+  // An email only its sender has viewed is not called "Not opened".
+  await expect(screen.getByText('Seen by you only')).toBeVisible();
 });

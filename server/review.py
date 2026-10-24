@@ -29,7 +29,8 @@ SUB = "review:"  # google_sub of the reviewer's account: Google's are digits, so
 
 # Sample emails: subject, recipient, campaign, days ago, and hits as (seconds after the
 # send, user agent, network). Recipients use the reserved .example domain. A hit within
-# 20 s of sending is the sender's own compose window (a self-view), as the first one shows.
+# 20 s of sending is the sender's own compose window (a self-view), as the first one shows;
+# the last has nothing else, so the dashboard shows it as "Seen by you only".
 GMAIL = "Mozilla/5.0 (Windows NT 5.1; rv:11.0) Gecko Firefox/11.0 (via ggpht.com GoogleImageProxy)"
 OUTLOOK = "Microsoft Office/16.0 (Windows NT 10.0; Microsoft Outlook 16.0.17928; Pro)"
 APPLE = "Mozilla/5.0"  # Apple Mail: a prefetch from Apple's network, an open from elsewhere
@@ -50,7 +51,7 @@ SAMPLE = [
      [(2400, GMAIL, "google"), (9000, OUTLOOK, "other")]),
     ("October investor update", "arjun@kestrel.example", "Investor update", 8, [(90, APPLE, "apple")]),
     ("Invoice 2026-041", "billing@corbel.example", None, 3, [(14400, OUTLOOK, "other")]),
-    ("Coffee next week?", "jules@fernhill.example", None, 1, []),
+    ("Coffee next week?", "jules@fernhill.example", None, 1, [(6, OUTLOOK, "other")]),
 ]
 
 

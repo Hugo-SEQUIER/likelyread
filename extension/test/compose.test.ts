@@ -239,6 +239,31 @@ test("toggling off sends untracked; trackByDefault=false and unconfigured never 
   assert.equal(pixels(c.body).length + c.registered.length, 0);
 });
 
+test("a tracked send says so, with its campaign and a link to the dashboard", () => {
+  const { doc, click, tick } = setup();
+  click();
+  const toast = doc.querySelector<HTMLElement>(".lr-toast")!;
+  assert.equal(toast.hidden, false);
+  assert.equal(toast.getAttribute("role"), "status");
+  assert.equal(toast.querySelector("span")!.textContent, "Tracked by Likelyread · Q4");
+  assert.equal(toast.querySelector("a")!.getAttribute("href"), `${SERVER}/`);
+  tick(5000);
+  click(); // a second send reuses the one note
+  assert.equal(doc.querySelectorAll(".lr-toast").length, 1);
+});
+
+test("an untracked send explains itself only when the extension is not set up", () => {
+  const off = setup({ configured: false });
+  off.click();
+  const toast = off.doc.querySelector<HTMLElement>(".lr-toast")!;
+  assert.match(toast.textContent!, /^Not tracked: Likelyread is not set up/);
+  assert.equal(toast.querySelector("a"), null);
+  const eyeOff = setup();
+  eyeOff.eye().dispatchEvent(new eyeOff.win.MouseEvent("click", { bubbles: true }));
+  eyeOff.click();
+  assert.equal(eyeOff.doc.querySelector(".lr-toast"), null, "the eye was turned off on purpose");
+});
+
 test("the send event is never cancelled, even when registration throws", () => {
   const { tracker, win, doc, body, send } = setup();
   (tracker as unknown as { deps: { register: () => void } }).deps.register = () => {
