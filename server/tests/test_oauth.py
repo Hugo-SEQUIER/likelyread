@@ -816,6 +816,19 @@ def test_the_reviewer_gets_a_pro_account_with_sample_emails(review_client):
     assert c.app.state.db.query("SELECT COUNT(*) AS n FROM accounts")[0]["n"] == 1
 
 
+def test_the_reviewer_gets_no_welcome_email(env, clock, google, docs, monkeypatch):
+    for k, v in {"REVIEW_EMAIL": REVIEWER, "REVIEW_PASSWORD": REVIEW_PASSWORD,
+                 "SMTP_HOST": "smtp.example.com", "MAIL_FROM": "Likelyread <hello@likelyread.com>"}.items():
+        monkeypatch.setenv(k, v)
+    application = likelyread.create_app()
+    sent = []
+    application.state.cloud.mail = sent.append
+    application.state.cloud.background = lambda fn: fn()
+    with TestClient(application, base_url="https://testserver", follow_redirects=False) as c:
+        assert review(c).status_code == 303
+    assert sent == [], "the test account is not a person signing up"
+
+
 def test_an_app_signs_in_with_the_reviewer_password(review_client):
     c = review_client
     verifier, challenge = pkce()
