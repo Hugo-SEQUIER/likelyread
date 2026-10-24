@@ -66,6 +66,8 @@ const filters = () => ({ campaign: state.campaign, sender: state.sender });
 function statusChip(e) {
   if (e.status === "opened") return h("span", { class: "chip open", title: `Last open ${fmtDate(e.last_open)}` }, `Opened ×${e.opens}`, h("span", { class: "chip-sub" }, relTime(e.last_open)));
   if (e.status === "prefetch_only") return h("span", { class: "chip dim", title: "Apple Mail loaded the image on delivery" }, "Prefetch only");
+  // Usually a test sent to yourself: your own views never count.
+  if (e.self > 0) return h("span", { class: "chip", title: "Only you have viewed it, and your own views never count" }, "Seen by you only");
   return h("span", { class: "chip" }, "Not opened");
 }
 

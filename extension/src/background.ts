@@ -1,7 +1,18 @@
-/** Background service worker: registration queue, suppress pings, DNR rules. */
+/** Background service worker: registration queue, suppress pings, open status for Gmail's ticks, DNR rules. */
 import { backoffMs, dnrRules, MAX_RETRY_MS, normalizeServerUrl, UUID4_RE } from "./lib";
 import { CLOUD_URL } from "./cloud";
-import { ApiError, apiFetch, getSettings, saveSettings, type ContentConfig, type ExternalConnect, type Message, type QueueItem } from "./shared";
+import {
+  ApiError,
+  apiFetch,
+  getSettings,
+  saveSettings,
+  type ContentConfig,
+  type EmailSummary,
+  type ExternalConnect,
+  type Message,
+  type QueueItem,
+  type StatusReply,
+} from "./shared";
 
 const QUEUE_KEY = "queue";
 // Per account, so a send-as address used in one Gmail account never makes another
@@ -89,6 +100,30 @@ async function suppress(id: string): Promise<void> {
   } catch {
     // Best effort: the server's grace window still covers the compose preview.
   }
+}
+
+/** Most emails one Gmail conversation asks about at once. */
+const MAX_STATUS_IDS = 20;
+
+/** The open status of the emails a Gmail conversation shows, for its ticks. */
+async function statuses(ids: string[]): Promise<StatusReply> {
+  const settings = await getSettings();
+  const reply: StatusReply = {};
+  if (!settings.serverUrl || !settings.token) return reply;
+  const wanted = [...new Set(ids)].filter((id) => UUID4_RE.test(id)).slice(0, MAX_STATUS_IDS);
+  await Promise.all(
+    wanted.map(async (id) => {
+      try {
+        const e = await apiFetch<EmailSummary>(settings, `/api/emails/${id}`);
+        reply[id] = { status: e.status, opens: e.opens, last_open: e.last_open, self: e.self };
+      } catch (err) {
+        // 404: not registered yet, or not this account's. 402: past the Free plan's history.
+        const status = err instanceof ApiError ? err.status : 0;
+        if (status === 404 || status === 402) reply[id] = null;
+      }
+    }),
+  );
+  return reply;
 }
 
 async function sendersByAccount(): Promise<Record<string, string[]>> {
@@ -201,6 +236,10 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse) => {
   }
   if (msg.type === "suppress") {
     suppress(msg.id).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.type === "status") {
+    statuses(Array.isArray(msg.ids) ? msg.ids : []).then(sendResponse);
     return true;
   }
   return false;

@@ -24,3 +24,16 @@
 .lr-new:focus { outline: 2px solid #d92b21; outline-offset: 0; background: #ffffff; }
 .lr-pace { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; margin-left: 4px; border-radius: 12px; background: #fce8e6; color: #a51d16; font-size: 12px; font-weight: 600; white-space: nowrap; cursor: help; }
 .lr-pace[hidden] { display: none; }
+
+/* Open status next to the date of your own tracked emails in a conversation: one grey tick, then two red ones once opened. */
+.lr-receipt { display: inline-flex; align-items: center; gap: 3px; height: 20px; margin-right: 8px; padding: 0 7px 0 4px; border-radius: 10px; color: #5f6368; font-size: 12px; font-weight: 400; line-height: 20px; text-decoration: none; white-space: nowrap; vertical-align: middle; transition: background-color 150ms ease; }
+.lr-receipt.is-opened { color: #d92b21; font-weight: 500; }
+.lr-receipt:hover { background: #f2f2f2; text-decoration: none; }
+.lr-receipt:focus-visible { outline: 2px solid #d92b21; outline-offset: 1px; }
+
+/* Says whether the email just sent is tracked. Sits above Gmail's own "Message sent". */
+.lr-toast { position: fixed; z-index: 2147483000; left: 24px; bottom: 88px; display: flex; align-items: center; gap: 16px; max-width: min(480px, calc(100vw - 48px)); padding: 12px 16px; border-radius: 6px; background: #0a0a0a; color: #ffffff; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18), 0 1px 3px rgba(0, 0, 0, 0.12); font: 14px/1.4 "Google Sans", Roboto, system-ui, sans-serif; animation: lr-toast-in 180ms ease-out; }
+.lr-toast[hidden] { display: none; }
+.lr-toast a { flex: none; color: #ff8a80; font-weight: 500; text-decoration: underline; text-underline-offset: 0.2em; }
+@keyframes lr-toast-in { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .lr-toast { animation: none; } }

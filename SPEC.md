@@ -37,6 +37,7 @@ It tells you when someone opens an email you sent, with no third-party SaaS invo
 │      • injects <img> on Send         │  /api/*  │      FastAPI        │
 │      • registers email               │          │      SQLite         │
 │      • suppresses self-views         │          └─────────▲───────────┘
+│      • ticks: open status in Gmail   │                    │
 │      • popup: list of tracked emails │                    │ GET /p/{id}.gif
 └──────────────────────────────────────┘                    │
                                          Recipient's mail client / Google proxy
@@ -190,6 +191,7 @@ Open rate = emails with at least one `open` hit / tracked emails. Prefetch-only 
    - let Gmail's send proceed without blocking or delaying it;
    - queue `POST /api/emails {id, subject, recipients(to+cc+bcc), age, campaign, sender}` in `chrome.storage`, where `sender` is the From field or, failing that, the account in the tab title, then flush it. Retry on failure with backoff for up to 7 days. The pixel works even if registration is late.
 4. If the injection fails for any reason, the email is still sent untouched. Tracking must never break sending.
+5. **[added]** After a tracked send, a note at the bottom left of Gmail says "Tracked by Likelyread" (with the campaign, if any) and links to the dashboard; it closes after 6 s. A send with tracking on while the extension is not set up says "Not tracked: Likelyread is not set up". A send with the eye turned off says nothing.
 
 ### 4.4 Self-view suppression (two layers)
 1. **Block**: a `declarativeNetRequest` rule blocks requests from the user's own browser to `{server}/p/*`. **[changed]** Google image-proxy URLs are deliberately not blocked: a recipient who reads in the same browser (another Gmail account) must still count.
@@ -197,17 +199,26 @@ Open rate = emails with at least one `open` hit / tracked emails. Prefetch-only 
 
 The server-side grace window (3.4) covers the compose preview.
 
-### 4.5 Popup
+### 4.5 Open status in conversations **[added]**
+- When the user opens a conversation, each message **they sent** (as defined in 4.4) that carries a Likelyread pixel gets a status next to its date, linking to the email in the dashboard (`{server}/#/email/{id}`):
+  - one grey tick: **Not opened yet**, **Seen by you only** (self-views only) or **Prefetch only**;
+  - two red ticks: **Opened** or **Opened ×N**. The tooltip gives the last open as relative time.
+- The message's own pixel is the last one outside quoted history; pixels inside a quote belong to earlier emails and get no status.
+- The content script asks the service worker (message `status`, at most 20 ids), which calls `GET /api/emails/{id}` for each. A status is asked again once it is a minute old, at the next DOM change.
+- No answer, no ticks: an id the server does not know (404), one past the Free plan's history (402), or a failed request shows nothing rather than a guess. The words are the dashboard's: "opened", never "read".
+
+### 4.6 Popup
 - Lists the last 50 tracked emails: subject, recipients, sent time, and a status chip:
   - **Not opened**
   - **Opened ×N**, with the last-open time shown as relative time
   - **Prefetch only (Apple)**, shown greyed out
+  - **[added]** **Seen by you only**, when the only hits are self-views (usually a test sent to yourself)
 - Clicking a row expands its hit list with the time, `via`, UA and kind.
 - Refresh happens on popup open. There is no background polling, which follows from not having notifications.
 - **[added]** An "active campaign" field (with suggestions from existing campaigns), the From address on each row, each hit's reason, and a link to the dashboard.
 
-### 4.6 Out of scope for v0.1 (UI)
-- No badges in the Gmail Sent list (planned for v0.2).
+### 4.7 Out of scope for v0.1 (UI)
+- No badges in the Gmail Sent list (planned for v0.2). **[changed]** Conversations have them (4.5); the Sent list still does not.
 
 ---
 
@@ -228,7 +239,7 @@ likelyread/
 │   └── requirements.txt
 ├── extension/
 │   ├── manifest.json
-│   ├── src/ (content.ts, background.ts, popup/, options/, gmail-selectors.ts)
+│   ├── src/ (content.ts, compose.ts, receipts.ts, background.ts, popup/, options/, gmail-selectors.ts)
 │   └── build script (esbuild)
 ├── cli/
 │   ├── likelyread.py        # [added] agent / script CLI, stdlib only, JSON output
@@ -284,7 +295,7 @@ Requirements: any 512 MB VPS works, since the server is a single process.
 |---|---|
 | v0.1 | Server, extension (inject, register, suppress, popup), Docker + Caddy deploy |
 | **v0.2** | Campaign dashboard, campaign picker in compose, sender address, per-hit reasons, CLI and skill for agents |
-| v0.3 | Status badges in Gmail's Sent list and thread view; per-email "stop tracking" |
+| v0.3 | Status badges in Gmail's Sent list (the thread view has them, 4.5); per-email "stop tracking" |
 | v0.4 | Notifications (ntfy / Telegram / webhook), first open only, opt-in |
 | v0.5 | Link click tracking (redirect `/l/{id}/{n}`) |
 | later | Per-recipient pixels from Gmail web (send separate copies), Firefox support |

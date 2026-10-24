@@ -33,6 +33,8 @@ export const SEL = {
   /** One message in an opened conversation, and the sender line inside it. */
   messageContainer: "div.adn, div.gs",
   messageSender: "span.gD[email]",
+  /** The date in a message's header, where the open status ticks go. */
+  messageDate: "span.g3",
 } as const;
 
 /** How many ancestors to climb from the body when there is no div.M9. */

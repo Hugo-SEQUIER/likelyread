@@ -39,9 +39,17 @@ export interface ContentConfig {
   senderLimits?: Record<string, { sent: number; limit: number | null }>;
 }
 
+/** What Gmail's ticks need to know about one tracked email. */
+export type EmailStatus = Pick<EmailSummary, "status" | "opens" | "last_open" | "self">;
+
+/** Answer to a "status" message: null for an id the server does not know (not
+ * registered yet, or past the plan's history). Ids it could not answer are left out. */
+export type StatusReply = Record<string, EmailStatus | null>;
+
 export type Message =
   | { type: "register"; email: PendingEmail; account?: string | null }
   | { type: "suppress"; id: string }
+  | { type: "status"; ids: string[] }
   | { type: "setCampaign"; campaign: string }
   | { type: "getConfig" }
   | { type: "configChanged" };

@@ -808,6 +808,7 @@ def test_the_reviewer_gets_a_pro_account_with_sample_emails(review_client):
     emails = listed.json()
     assert int(listed.headers["x-total-count"]) == len(emails) == len(review_mod.SAMPLE)
     assert {"opened", "not_opened", "prefetch_only"} <= {e["status"] for e in emails}
+    assert any(e["status"] == "not_opened" and e["self"] for e in emails), "one seen by the sender only"
     assert all(r.endswith(".example") for e in emails for r in e["recipients"])
 
     assert review(c).status_code == 303
