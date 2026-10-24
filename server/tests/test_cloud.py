@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sqlite3
 import time
 import urllib.parse
@@ -265,6 +266,158 @@ def test_tampered_oauth_cookie_is_rejected(client):
 def test_bad_token_is_401(client):
     assert client.get("/api/emails", headers=H("nope")).status_code == 401
     assert client.get("/api/emails").status_code == 401
+
+
+# ---- welcome email ---------------------------------------------------------------
+
+MAIL_FROM = "Likelyread <hello@likelyread.com>"
+
+
+@pytest.fixture
+def outbox(env, clock, fake):
+    """A cloud with SMTP set up, whose emails land in a list, sent inline."""
+    env.setenv("SMTP_HOST", "smtp.example.com")
+    env.setenv("MAIL_FROM", MAIL_FROM)
+    application = likelyread.create_app()
+    c = application.state.cloud
+    c.http = fake
+    sent = []
+    c.mail = sent.append
+    c.background = lambda fn: fn()
+    return TestClient(application, base_url="https://testserver", follow_redirects=False), sent
+
+
+def test_a_new_account_gets_one_welcome_email_with_its_dashboard(outbox, fake):
+    client, sent = outbox
+    assert sign_in(client, fake, sub="g-new", email="New@Example.com")
+    assert len(sent) == 1
+    msg = sent[0]
+    assert msg["To"] == "new@example.com" and msg["From"] == MAIL_FROM
+    assert msg["Auto-Submitted"] == "auto-generated" and msg["Message-ID"].endswith("@likelyread.com>")
+    text = msg.get_body(("plain",)).get_content()
+    page = msg.get_body(("html",)).get_content()
+    for body in (text, page):
+        assert "https://app.likelyread.com/" in body
+        assert "https://app.likelyread.com/#/account" in body
+        assert "red eye next to Send" in body and "another address" in body
+        assert not re.search(r"\bread\b", body.replace("Likelyread", "")), "say opened, never read"
+    assert "<img" not in page and "/p/" not in page, "no pixel, no remote image"
+
+    assert sign_in(client, fake, sub="g-new", email="new@example.com"), "a returning sign-in"
+    assert len(sent) == 1, "sent once, when the account is created"
+    assert sign_in(client, fake, sub="g-other", email="bo@example.com")
+    assert [m["To"] for m in sent] == ["new@example.com", "bo@example.com"]
+
+
+def test_no_welcome_email_without_smtp(client, fake):
+    c = client.app.state.cloud
+    sent = []
+    c.mail = sent.append
+    c.background = lambda fn: fn()
+    assert not c.cfg.mail_enabled
+    assert sign_in(client, fake)
+    assert sent == []
+
+
+def test_a_failing_mail_server_never_breaks_sign_in(outbox, fake, capsys):
+    import smtplib
+
+    client, _ = outbox
+
+    def refuse(msg):
+        raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Authentication failed")
+
+    client.app.state.cloud.mail = refuse
+    token = sign_in(client, fake, sub="g-x", email="x@example.com")
+    assert client.get("/api/me", headers=H(token)).json()["email"] == "x@example.com"
+    out = capsys.readouterr().out
+    assert "welcome email failed: SMTPAuthenticationError 535" in out and "x@example.com" not in out
+
+    def no_thread(fn):
+        raise RuntimeError("can't start new thread")
+
+    client.app.state.cloud.background = no_thread
+    assert sign_in(client, fake, sub="g-y", email="y@example.com")
+
+
+def test_the_welcome_email_goes_out_on_a_thread_of_its_own(env, clock, fake):
+    import threading
+
+    env.setenv("SMTP_HOST", "smtp.example.com")
+    env.setenv("MAIL_FROM", MAIL_FROM)
+    application = likelyread.create_app()
+    application.state.cloud.http = fake
+    done, threads = threading.Event(), []
+
+    def mail(msg):
+        threads.append(threading.current_thread())
+        done.set()
+
+    application.state.cloud.mail = mail
+    client = TestClient(application, base_url="https://testserver", follow_redirects=False)
+    assert sign_in(client, fake, sub="g-t", email="t@example.com")
+    assert done.wait(5) and threads[0] is not threading.main_thread()
+
+
+@pytest.mark.parametrize("extra", [
+    {"SMTP_HOST": "smtp.example.com"},
+    {"MAIL_FROM": MAIL_FROM},
+    {"SMTP_HOST": "smtp.example.com", "MAIL_FROM": "Likelyread"},
+])
+def test_half_a_mail_setup_stops_the_server(env, extra):
+    for k, v in extra.items():
+        env.setenv(k, v)
+    with pytest.raises(RuntimeError, match="SMTP_HOST and MAIL_FROM"):
+        likelyread.create_app()
+
+
+class FakeSMTP:
+    """smtplib.SMTP and SMTP_SSL, recording what a send does."""
+
+    log: list = []
+
+    def __init__(self, host, port, timeout=None, context=None):
+        FakeSMTP.log.append(("connect", type(self).__name__, host, port, context is not None))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        FakeSMTP.log.append(("quit",))
+
+    def starttls(self, context=None):
+        FakeSMTP.log.append(("starttls", context is not None))
+
+    def login(self, user, password):
+        FakeSMTP.log.append(("login", user, password))
+
+    def send_message(self, msg):
+        FakeSMTP.log.append(("send", msg["To"]))
+
+
+class FakeSMTPSSL(FakeSMTP):
+    pass
+
+
+@pytest.mark.parametrize("port, expected", [
+    ("", [("connect", "FakeSMTP", "smtp.example.com", 587, False), ("starttls", True)]),
+    ("465", [("connect", "FakeSMTPSSL", "smtp.example.com", 465, True)]),
+])
+def test_smtp_always_uses_tls(monkeypatch, port, expected):
+    import smtplib
+
+    import welcome
+
+    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
+    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTPSSL)
+    FakeSMTP.log = []
+    cfg = cloud.CloudSettings({
+        "PUBLIC_URL": "https://app.likelyread.com", "SESSION_SECRET": SECRET, "GOOGLE_CLIENT_ID": CLIENT_ID,
+        "GOOGLE_CLIENT_SECRET": "x", "SMTP_HOST": "smtp.example.com", "SMTP_PORT": port, "SMTP_USER": "apikey",
+        "SMTP_PASSWORD": "pw", "MAIL_FROM": MAIL_FROM,
+    })
+    welcome.send_smtp(cfg, welcome.message("ann@example.com", cfg.mail_from, cfg.public_url))
+    assert FakeSMTP.log == expected + [("login", "apikey", "pw"), ("send", "ann@example.com"), ("quit",)]
 
 
 # ---- isolation -----------------------------------------------------------------

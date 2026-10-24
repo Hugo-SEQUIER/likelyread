@@ -14,18 +14,22 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from email.utils import parseaddr
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
+import welcome
 from app import DB, FEATURES, Principal
 
 SCHEMA = """
@@ -181,6 +185,12 @@ class CloudSettings:
         # Chrome extension ids allowed to receive the token after sign-in (the store
         # id, plus an unpacked id while developing). Any other ?ext= is ignored.
         self.extension_ids = {x.strip() for x in e.get("EXTENSION_IDS", "").split(",") if EXTENSION_ID_RE.match(x.strip())}
+        # The welcome email to new accounts (welcome.py). Off while SMTP_HOST and MAIL_FROM are empty.
+        self.smtp_host = e.get("SMTP_HOST", "").strip()
+        self.smtp_port = int(e.get("SMTP_PORT") or "587")
+        self.smtp_user = e.get("SMTP_USER", "")
+        self.smtp_password = e.get("SMTP_PASSWORD", "")
+        self.mail_from = e.get("MAIL_FROM", "").strip()
 
         problems = []
         if not (self.public_url.startswith("https://") or self.public_url.startswith(("http://localhost", "http://127.0.0.1"))):
@@ -189,12 +199,18 @@ class CloudSettings:
             problems.append("SESSION_SECRET (32+ characters: openssl rand -hex 32)")
         if not self.google_client_id or not self.google_client_secret:
             problems.append("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET")
+        if bool(self.smtp_host) != bool(self.mail_from) or (self.mail_from and "@" not in parseaddr(self.mail_from)[1]):
+            problems.append("SMTP_HOST and MAIL_FROM (Likelyread <hello@likelyread.com>) together, or neither")
         if problems:
             raise RuntimeError("MODE=cloud needs " + ", ".join(problems))
 
     @property
     def billing_enabled(self) -> bool:
         return bool(self.stripe_secret_key and self.stripe_webhook_secret and all(self.price_ids.values()))
+
+    @property
+    def mail_enabled(self) -> bool:
+        return bool(self.smtp_host and self.mail_from)
 
     @property
     def redirect_uri(self) -> str:
@@ -232,6 +248,9 @@ class Cloud:
         self.db = db
         self.cfg = cfg
         self.http: Callable[[str, str, dict, bytes | None], tuple[int, dict]] = http_json
+        # Sends one email, and runs a function off the request. Both replaced in tests.
+        self.mail: Callable[[EmailMessage], None] = lambda msg: welcome.send_smtp(cfg, msg)
+        self.background: Callable[[Callable[[], None]], None] = lambda fn: threading.Thread(target=fn, daemon=True).start()
         # oauth.OAuth, set by app.py: an app's sign-in continues there after Google.
         self.oauth: Any = None
         self.review: Any = None  # review.Review while the reviewer sign-in is on
@@ -289,7 +308,25 @@ class Cloud:
                 "INSERT INTO accounts(id, email, google_sub, created_at) VALUES (?, ?, ?, ?)",
                 (acct, email, sub, time.time()),
             )
-            return acct
+        self.send_welcome(email)
+        return acct
+
+    def send_welcome(self, email: str) -> None:
+        """Email a new account its dashboard link, off the request. The sign-in never
+        waits for it, and a failure is only logged."""
+        if not self.cfg.mail_enabled:
+            return
+
+        def send() -> None:
+            try:
+                self.mail(welcome.message(email, self.cfg.mail_from, self.cfg.public_url))
+            except Exception as exc:  # noqa: BLE001 - nothing about this email may break a sign-in
+                print(f"welcome email failed: {welcome.failure(exc)}")
+
+        try:
+            self.background(send)
+        except Exception as exc:  # noqa: BLE001 - for example, no thread could be started
+            print(f"welcome email failed: {welcome.failure(exc)}")
 
     def create_token(self, account_id: str, label: str) -> str:
         token = secrets.token_urlsafe(32)

@@ -233,6 +233,7 @@ likelyread/
 │   ├── mcp_server.py       # [added] MCP endpoint for agents (/mcp)
 │   ├── oauth.py            # [added] Likelyread Cloud: OAuth sign-in for apps that connect to /mcp
 │   ├── review.py           # [added] Likelyread Cloud: password sign-in for the directory reviewers' test account
+│   ├── welcome.py          # [added] Likelyread Cloud: the welcome email to new accounts, over SMTP
 │   ├── dashboard/          # [added] static dashboard (index.html, app.js, style.css)
 │   ├── tests/
 │   ├── Dockerfile
