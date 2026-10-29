@@ -697,3 +697,18 @@ def test_health_of_an_address_with_no_tracked_email_yet(client):
     assert [r["sender"] for r in rows] == ["new@example.com"]
     assert (rows[0]["ramp"]["day"], rows[0]["ramp"]["remaining"], rows[0]["emails"]) == (1, 20, 0)
     assert client.get("/api/senders/health?sender=nobody&dns=false", headers=AUTH).status_code == 422
+
+
+# ---- search engines -----------------------------------------------------------
+
+
+def test_robots_txt_keeps_crawlers_off_pixels_api_and_sign_in(client):
+    r = client.get("/robots.txt")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
+    rules = [line for line in r.text.splitlines() if line and not line.startswith("#")]
+    assert rules == ["User-agent: *", "Disallow: /p/", "Disallow: /api/", "Disallow: /auth/", "Disallow: /oauth/", "Disallow: /mcp"]
+
+
+@pytest.mark.parametrize("path", ["/", "/healthz", "/robots.txt", f"/p/{uuid.uuid4()}.gif", "/api/ping", "/nope"])
+def test_every_response_says_noindex(client, path):
+    assert client.get(path).headers["x-robots-tag"] == "noindex, nofollow"

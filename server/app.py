@@ -120,6 +120,22 @@ GOOGLE_PROXY_NETS = tuple(
 # so the network is what tells a prefetch from a real open on the device.
 APPLE_NETS = tuple(ipaddress.ip_network(n) for n in ("17.0.0.0/8", "2620:149::/32", "2a01:b740::/32"))
 UA_MAX = 512
+
+# A server is not a website: the product's page is likelyread.com (or, self-hosted, your own site).
+# Every response says noindex (see security_headers), and robots.txt keeps crawlers away from the
+# pixel, which they must not fetch (a fetch would log an open), and from the API and sign-in pages.
+# The dashboard root stays crawlable so that search engines read the noindex and drop the URL,
+# instead of listing it without content as they do for a path that robots.txt blocks.
+ROBOTS_TXT = """\
+# A Likelyread server: a tracking pixel, an API and a dashboard behind a sign-in.
+# Nothing here is for search: every response carries X-Robots-Tag: noindex.
+User-agent: *
+Disallow: /p/
+Disallow: /api/
+Disallow: /auth/
+Disallow: /oauth/
+Disallow: /mcp
+"""
 MAX_AGE_SECONDS = 30 * 86400
 # Hits for ids that were never registered are dropped after this long. The
 # extension retries registration for 7 days, so 8 leaves a margin.
@@ -960,6 +976,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
         if not request.url.path.startswith("/p/"):
             response.headers.setdefault("X-Frame-Options", "DENY")
         if request.url.path.startswith(("/api/", "/auth/", "/oauth/", "/mcp")):
@@ -1004,6 +1021,10 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
+
+    @app.get("/robots.txt", include_in_schema=False)
+    def robots():
+        return PlainTextResponse(ROBOTS_TXT)
 
     if cfg.openai_apps_challenge:
 
