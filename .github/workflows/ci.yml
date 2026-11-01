@@ -76,9 +76,8 @@ jobs:
           export CHROME_PATH="$(node -e 'import("playwright-core").then(m => console.log(m.chromium.executablePath()))')"
           npm run e2e
 
-      - name: e2e, extension listing and Gmail receipts (e2e.config.ts)
-        run: npx e2e run
-
+      # Not `npx e2e run` (e2e.config.ts): its launcher starts Chromium without --no-sandbox,
+      # and this host's AppArmor leaves the runner user no usable sandbox (docs/ci-runner.md).
       - name: e2e, Likelyread Cloud with fake Google (e2e.cloud.config.ts)
         run: npx e2e run --config e2e.cloud.config.ts
 
