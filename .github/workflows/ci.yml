@@ -1,0 +1,88 @@
+# Checks for every pull request and every push to main. Jobs run on this repository's
+# self-hosted runner (docs/ci-runner.md); pull requests from forks run on GitHub's hosted
+# Ubuntu instead, so outside code never reaches the server.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON('["self-hosted","likelyread"]') }}
+    timeout-minutes: 25
+    env:
+      # The server's virtualenv, where the README's Development section puts it.
+      PYTHON: ${{ github.workspace }}/server/.venv/bin/python
+      CI: "1"
+      E2E_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/requirements*.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            extension/package-lock.json
+
+      - name: Install server dependencies (Python 3.12, as in server/Dockerfile)
+        run: |
+          uv venv server/.venv --python 3.12
+          uv pip install --python server/.venv/bin/python -r server/requirements-dev.txt
+
+      - name: Install extension and e2e dependencies
+        run: |
+          npm ci --prefix extension --no-audit --no-fund
+          npm ci --no-audit --no-fund
+          # Full Chromium (the headless shell cannot load extensions); a no-op once cached.
+          npx --prefix extension playwright-core install chromium
+
+      - name: Server tests
+        working-directory: server
+        run: .venv/bin/python -m pytest -q
+
+      - name: CLI tests
+        working-directory: cli
+        run: ../server/.venv/bin/python -m pytest -q tests
+
+      - name: Extension typecheck
+        run: npm run typecheck --prefix extension
+
+      - name: Extension unit tests
+        run: npm test --prefix extension
+
+      - name: Extension build
+        run: npm run build --prefix extension
+
+      - name: Extension e2e (real Chromium, fake Gmail, real server)
+        working-directory: extension
+        run: |
+          export CHROME_PATH="$(node -e 'import("playwright-core").then(m => console.log(m.chromium.executablePath()))')"
+          npm run e2e
+
+      - name: e2e, extension listing and Gmail receipts (e2e.config.ts)
+        run: npx e2e run
+
+      - name: e2e, Likelyread Cloud with fake Google (e2e.cloud.config.ts)
+        run: npx e2e run --config e2e.cloud.config.ts
+
+  security:
+    uses: Hugo-SEQUIER/ci-workflows/.github/workflows/security.yml@v1
+    with:
+      runs-on: ${{ github.event.pull_request.head.repo.fork && '["ubuntu-24.04"]' || '["self-hosted","likelyread"]' }}
