@@ -3,7 +3,8 @@
 //
 // Run from extension/:  npm run build && CHROME_PATH=/path/to/chrome npm run e2e
 // Needs: a Chromium/Chrome binary (CHROME_PATH), Python with the server's
-// requirements (PYTHON, default python3), openssl, and ports 8443 and 8781 free.
+// requirements (PYTHON, default python3), openssl, and port 8781 free (the fake
+// Gmail takes any free port).
 import { chromium } from "playwright-core";
 import { spawn, execFileSync } from "node:child_process";
 import https from "node:https";
@@ -37,7 +38,9 @@ const gmail = `<!doctype html><html><head><title>Inbox - you@example.com - Gmail
 </body></html>`;
 const fake = https.createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(crt) }, (req, res) => {
   res.writeHead(200, { "content-type": "text/html" }); res.end(gmail);
-}).listen(8443, "127.0.0.1");
+});
+await new Promise((resolve) => fake.listen(0, "127.0.0.1", resolve));
+const GMAIL_PORT = fake.address().port;
 
 // --- Likelyread server
 let server;
@@ -53,7 +56,7 @@ const api = async (p) => (await fetch(API + p, { headers: { Authorization: "Bear
 const ctx = await chromium.launchPersistentContext(path.join(WORK, "profile"), {
   executablePath: CHROME, headless: true,
   args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`, "--headless=new", "--no-sandbox",
-    "--host-resolver-rules=MAP mail.google.com:443 127.0.0.1:8443", "--ignore-certificate-errors"],
+    `--host-resolver-rules=MAP mail.google.com:443 127.0.0.1:${GMAIL_PORT}`, "--ignore-certificate-errors"],
 });
 try {
   let [sw] = ctx.serviceWorkers();
