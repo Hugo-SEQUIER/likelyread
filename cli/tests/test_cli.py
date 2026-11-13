@@ -171,6 +171,18 @@ def test_set_campaign(server):
     assert e["campaign"] == "B"
 
 
+def test_replied_and_systems(server):
+    _, tr, _ = run(server, "track", "--subject", "Answer me", "--to", "bob@x.com")
+    _, e, _ = run(server, "replied", tr["id"])
+    assert e["replied_at"] is not None
+    _, rows, _ = run(server, "ls", "--status", "replied")
+    assert [r["id"] for r in rows] == [tr["id"]]
+    _, e, _ = run(server, "replied", tr["id"], "--undo")
+    assert e["replied_at"] is None
+    _, systems, _ = run(server, "systems")
+    assert systems == []
+
+
 def test_parse_setup_link():
     tok = "0123456789abcdef0123456789abcdef"
     assert lr.parse_setup_link(f" https://t.example.com/#connect={tok} ") == ("https://t.example.com", tok)

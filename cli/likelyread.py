@@ -263,6 +263,14 @@ def cmd_set_campaign(cfg: dict, a):
     return api(cfg, "PATCH", f"/api/emails/{urllib.parse.quote(a.id)}", {"campaign": a.campaign or None})
 
 
+def cmd_replied(cfg: dict, a):
+    return api(cfg, "PATCH", f"/api/emails/{urllib.parse.quote(a.id)}", {"replied": not a.undo})
+
+
+def cmd_systems(cfg: dict, a):
+    return api(cfg, "GET", "/api/systems")
+
+
 SETUP_RE = re.compile(r"^#connect=([A-Za-z0-9._~-]{16,})$")
 
 
@@ -324,7 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("ls", help="recent emails with status")
     s.add_argument("--campaign", help="campaign name, or __none__ for emails without one")
     s.add_argument("--from", dest="sender")
-    s.add_argument("--status", choices=["opened", "not_opened", "prefetch_only"])
+    s.add_argument("--status", choices=["opened", "not_opened", "prefetch_only", "replied"])
     s.add_argument("--q", help="search subject, recipient, campaign")
     s.add_argument("--limit", type=int, default=50)
     s.set_defaults(fn=cmd_ls)
@@ -352,6 +360,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id")
     s.add_argument("campaign", nargs="?", default="")
     s.set_defaults(fn=cmd_set_campaign)
+
+    s = sub.add_parser("replied", help="mark an email as replied to (--undo: not replied)")
+    s.add_argument("id")
+    s.add_argument("--undo", action="store_true")
+    s.set_defaults(fn=cmd_replied)
+
+    sub.add_parser("systems", help="outreach systems, their experiments and what works").set_defaults(fn=cmd_systems)
 
     sub.add_parser("ping", help="check configuration and token").set_defaults(fn=cmd_ping)
 
