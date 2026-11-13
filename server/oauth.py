@@ -435,10 +435,11 @@ class OAuth:
             if here else ""
         )
         can = (
-            "It can track the emails it sends for you, and read your tracked emails, their opens and your campaigns."
+            "It can track the emails it sends for you, and read your tracked emails, their opens and replies, "
+            "your campaigns and your systems."
             if app["client_id"] in FULL_TOOL_APPS else
-            "It can read your tracked emails, their opens, your campaigns and stats, and move emails between "
-            "campaigns. It cannot track new emails."
+            "It can read your tracked emails, their opens and replies, your campaigns, stats and systems, move "
+            "emails between campaigns, mark replies and log tests. It cannot track new emails."
         )
         body = f"""<h1 class="login-title">Connect {name}</h1>
       <p><strong>{html.escape(urllib.parse.urlsplit(app["client_id"]).hostname or "")}</strong> wants to use your Likelyread account, {html.escape(saved["email"])}.</p>

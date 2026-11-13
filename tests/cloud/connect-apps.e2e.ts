@@ -89,8 +89,8 @@ test('an app connects with a Google sign-in and an approve page, then is disconn
   };
   // An app that signs in reads results: no tool that tracks (Claude Code apart).
   expect(listed.result.tools.map((t) => t.name).sort()).toEqual([
-    'account', 'campaign_names', 'get_email', 'get_stats', 'list_campaigns', 'list_emails', 'sender_health',
-    'set_campaign',
+    'account', 'campaign_names', 'get_email', 'get_stats', 'list_campaigns', 'list_emails', 'list_systems',
+    'mark_replied', 'save_experiment', 'save_system', 'sender_health', 'set_campaign',
   ]);
 
   // Account lists the app; Disconnect ends its access.
