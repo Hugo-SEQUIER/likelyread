@@ -476,6 +476,9 @@ class Cloud:
                 c.execute(f"DELETE FROM hits WHERE email_id IN ({marks})", chunk)
             c.execute("DELETE FROM suppressions WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM emails WHERE account_id = ?", (account_id,))
+            c.execute("DELETE FROM experiments WHERE account_id = ?", (account_id,))
+            c.execute("DELETE FROM categories WHERE account_id = ?", (account_id,))
+            c.execute("DELETE FROM systems WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM tokens WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM apps WHERE account_id = ?", (account_id,))
             c.execute("DELETE FROM app_codes WHERE account_id = ?", (account_id,))
@@ -920,7 +923,7 @@ class Cloud:
             person(p)
             row = self.account(p.account_id or "")
             emails = [dict(r) for r in self.db.query(
-                "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails WHERE account_id = ? ORDER BY sent_at",
+                "SELECT id, subject, recipients, sent_at, campaign, sender, replied_at FROM emails WHERE account_id = ? ORDER BY sent_at",
                 (row["id"],),
             )]
             hits: dict[str, list] = {}
@@ -934,7 +937,32 @@ class Cloud:
                 e["recipients"] = json.loads(e["recipients"] or "[]")
                 e["hits"] = hits.get(e["id"], [])
             account = {k: row[k] for k in ("email", "created_at", "plan", "plan_until", "subscription_status")}
-            body = json.dumps({"exported_at": time.time(), "account": account, "emails": emails}, indent=1)
+            systems = [
+                {k: s[k] for k in ("id", "name", "goal", "target", "notes", "created_at")}
+                for s in self.db.query("SELECT * FROM systems WHERE account_id = ? ORDER BY created_at", (row["id"],))
+            ]
+            experiments = [
+                {
+                    **{k: e[k] for k in ("id", "system_id", "idea", "campaign", "note", "created_at")},
+                    "values": json.loads(e["category_values"] or "{}"),
+                }
+                for e in self.db.query("SELECT * FROM experiments WHERE account_id = ? ORDER BY created_at", (row["id"],))
+            ]
+            categories = [
+                {k: r[k] for k in ("id", "system_id", "name", "created_at")}
+                for r in self.db.query("SELECT * FROM categories WHERE account_id = ? ORDER BY created_at", (row["id"],))
+            ]
+            body = json.dumps(
+                {
+                    "exported_at": time.time(),
+                    "account": account,
+                    "emails": emails,
+                    "systems": systems,
+                    "experiments": experiments,
+                    "categories": categories,
+                },
+                indent=1,
+            )
             return Response(
                 content=body,
                 media_type="application/json",

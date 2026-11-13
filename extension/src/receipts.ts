@@ -1,13 +1,14 @@
 /**
  * Open status on our own tracked emails in an opened Gmail conversation, next to
  * the message's date: one grey tick while nobody has opened it, two red ticks once
- * someone has. Each links to the email in the dashboard. Like compose.ts it never
+ * someone has, two green ticks once someone replied. Each links to the email in the
+ * dashboard. Replies seen in the conversation are reported to the server. Like compose.ts it never
  * calls chrome.*, so it can be tested against a fake Gmail DOM; content.ts wires it.
  *
  * Rule: no answer, no ticks. A failed or missing status shows nothing rather than a
  * guess, and the words are the dashboard's: "opened", never "read".
  */
-import { ownPixels } from "./compose";
+import { ownAddresses, ownPixels } from "./compose";
 import { SEL } from "./gmail-selectors";
 import { relTime } from "./lib";
 import type { ContentConfig, EmailStatus, StatusReply } from "./shared";
@@ -17,6 +18,8 @@ export interface ReceiptDeps {
   accountEmail(): string | null;
   /** Ask the server about these emails; resolves with what it could answer. */
   status(ids: string[]): Promise<StatusReply>;
+  /** Report a reply to one of our emails; resolves true once the server answered. */
+  reply(id: string, from: string, age?: number): Promise<boolean>;
   now(): number;
 }
 
@@ -25,6 +28,8 @@ export const RECEIPT_CLASS = "lr-receipt";
 const FRESH_MS = 60_000;
 /** Quoted history in a sent message: pixels of earlier emails live there. */
 const QUOTED = '[class*="gmail_quote"], blockquote';
+/** The oldest reply age the server takes, in seconds. */
+const MAX_REPLY_AGE = 30 * 86400;
 
 const ONE_TICK =
   '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" d="m3 8.5 3 3 7-7"/></svg>';
@@ -33,6 +38,7 @@ const TWO_TICKS =
 
 export interface ReceiptView {
   opened: boolean;
+  replied: boolean;
   /** The few words next to the ticks. */
   label: string;
   /** One sentence for the tooltip and screen readers. */
@@ -41,24 +47,30 @@ export interface ReceiptView {
 
 /** What the ticks say about one email. */
 export function describeStatus(st: EmailStatus, now: number): ReceiptView {
-  if (st.status === "opened") {
+  const opened = st.status === "opened";
+  if (st.replied_at) return { opened, replied: true, label: "Replied", detail: `Replied ${relTime(st.replied_at, now)}.` };
+  if (opened) {
     const when = relTime(st.last_open, now);
     return st.opens > 1
-      ? { opened: true, label: `Opened ×${st.opens}`, detail: `Opened ${st.opens} times, most recently ${when}.` }
-      : { opened: true, label: "Opened", detail: `Opened once, ${when}.` };
+      ? { opened, replied: false, label: `Opened ×${st.opens}`, detail: `Opened ${st.opens} times, most recently ${when}.` }
+      : { opened, replied: false, label: "Opened", detail: `Opened once, ${when}.` };
   }
   if (st.status === "prefetch_only") {
-    return { opened: false, label: "Prefetch only", detail: "Not opened yet. Apple Mail loaded the image on delivery, which is not an open." };
+    return { opened, replied: false, label: "Prefetch only", detail: "Not opened yet. Apple Mail loaded the image on delivery, which is not an open." };
   }
   if (st.self > 0) {
-    return { opened: false, label: "Seen by you only", detail: "Not opened yet. Only you have viewed it, and your own views never count." };
+    return { opened, replied: false, label: "Seen by you only", detail: "Not opened yet. Only you have viewed it, and your own views never count." };
   }
-  return { opened: false, label: "Not opened yet", detail: "Tracked. Nobody has opened it yet." };
+  return { opened, replied: false, label: "Not opened yet", detail: "Tracked. Nobody has opened it yet." };
 }
 
 export class Receipts {
   private known = new Map<string, { at: number; status: EmailStatus | null }>();
   private asking = new Set<string>();
+  /** Emails to ask about on the next scan, fresh or not: a reply was just reported. */
+  private askAgain = new Set<string>();
+  /** "id|sender" of the replies already reported from this page. */
+  private reported = new Set<string>();
 
   constructor(private doc: Document, private deps: ReceiptDeps) {}
 
@@ -71,12 +83,14 @@ export class Receipts {
       if (!cfg.configured) return;
       const now = this.deps.now();
       const ask: string[] = [];
-      for (const [message, id] of this.messages(cfg)) {
+      const own = this.messages(cfg);
+      for (const [message, id] of own) {
         const known = this.known.get(id);
-        if ((!known || now - known.at > FRESH_MS) && !this.asking.has(id)) ask.push(id);
+        if ((!known || now - known.at > FRESH_MS || this.askAgain.has(id)) && !this.asking.has(id)) ask.push(id);
         this.render(message, id, known?.status ?? null, cfg, now);
       }
       if (ask.length) this.ask(ask);
+      this.reportReplies(own, cfg, now);
     });
   }
 
@@ -96,8 +110,47 @@ export class Receipts {
     return out;
   }
 
+  /**
+   * Replies on screen. In DOM order, a message whose sender is neither this account
+   * nor one of its send-as addresses answers the nearest own message above it, and
+   * is reported when that one is tracked. Each (email, sender) is reported once per page.
+   *
+   * Limit: a collapsed message has no body on screen, so a collapsed own email
+   * shows no pixel. A reply under it is reported only once the user expands that
+   * email; it is never credited to an older one.
+   */
+  private reportReplies(own: Map<Element, string>, cfg: ContentConfig, now: number): void {
+    const account = this.deps.accountEmail();
+    if (!account) return;
+    const mine = ownAddresses(cfg, account);
+    let above: string | null = null;
+    for (const sender of Array.from(this.doc.querySelectorAll(SEL.messageSender))) {
+      const message = sender.closest(SEL.messageContainer);
+      const from = sender.getAttribute("email")?.trim().toLowerCase();
+      if (!message || !from || sender.closest('[contenteditable="true"]')) continue;
+      if (mine.has(from)) {
+        above = own.get(message) ?? null;
+        continue;
+      }
+      const id = above;
+      if (!id || this.reported.has(`${id}|${from}`)) continue;
+      this.reported.add(`${id}|${from}`);
+      this.deps.reply(id, from, replyAge(message, now)).then(
+        (ok) => {
+          if (!ok) return;
+          this.askAgain.add(id);
+          this.scan();
+        },
+        () => undefined,
+      );
+    }
+  }
+
   private ask(ids: string[]): void {
-    for (const id of ids) this.asking.add(id);
+    for (const id of ids) {
+      this.asking.add(id);
+      this.askAgain.delete(id);
+    }
     this.deps.status(ids).then(
       (reply) => this.settle(ids, reply || {}),
       () => this.settle(ids, {}),
@@ -140,14 +193,24 @@ export class Receipts {
     if (badge.dataset.key === key) return;
     badge.dataset.key = key;
     badge.href = href;
-    badge.classList.toggle("is-opened", view.opened);
-    badge.innerHTML = view.opened ? TWO_TICKS : ONE_TICK;
+    badge.classList.toggle("is-opened", view.opened && !view.replied);
+    badge.classList.toggle("is-replied", view.replied);
+    badge.innerHTML = view.opened || view.replied ? TWO_TICKS : ONE_TICK;
     const label = this.doc.createElement("span");
     label.textContent = view.label;
     badge.append(label);
     badge.title = `${view.detail} Click to see it in your Likelyread dashboard.`;
     badge.setAttribute("aria-label", `Likelyread: ${view.detail} Open it in your dashboard.`);
   }
+}
+
+/** Seconds since a message was sent, from the date in its header. Undefined when
+ * the date does not parse (Gmail writes it in the user's language) or is out of
+ * the server's range. */
+function replyAge(message: Element, now: number): number | undefined {
+  const sent = Date.parse(message.querySelector(SEL.messageDate)?.getAttribute("title") || "");
+  const age = Math.round((now - sent) / 1000);
+  return age >= 0 && age <= MAX_REPLY_AGE ? age : undefined;
 }
 
 function safe(fn: () => void): void {

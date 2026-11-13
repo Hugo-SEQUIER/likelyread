@@ -19,6 +19,8 @@ sales tax. Likelyread is the seller. Self-hosting stays free with every feature.
 | History | 30 days | Unlimited | Unlimited |
 | Campaign analytics, charts, filters by campaign and sender | No | Yes | Yes |
 | Sender health: SPF/DKIM/DMARC checks, daily pace guide, open-rate drop alerts | No | Yes | Yes |
+| Replies: detected in Gmail or marked by hand, reply rate and time to reply | Yes | Yes | Yes |
+| Systems: test one change at a time and see which option wins | No | Yes | Yes |
 
 ### Why these prices
 

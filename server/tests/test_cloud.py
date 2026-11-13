@@ -439,6 +439,27 @@ def test_accounts_never_see_each_other(client, fake, clock):
     assert client.get(f"/api/emails/{eid}", headers=H(a)).json()["subject"] == "A's secret"
 
 
+def test_systems_and_replies_stay_in_their_account(client, fake, clock):
+    a = sign_in(client, fake, "g-a", "a@x.com")
+    b = sign_in(client, fake, "g-b", "b@x.com")
+    for t in (a, b):
+        client.app.state.db.execute("UPDATE accounts SET plan='lifetime' WHERE id=?", (account_id(client, t),))
+    _, eid = register(client, a)
+    assert client.post(f"/api/emails/{eid}/reply", json={"from": "x@y.com"}, headers=H(b)).status_code == 404
+    assert client.patch(f"/api/emails/{eid}", json={"replied": True}, headers=H(b)).status_code == 404
+    sid = client.post("/api/systems", json={"name": "A's outreach"}, headers=H(a)).json()["id"]
+    xid = client.post(f"/api/systems/{sid}/experiments", json={"idea": "y"}, headers=H(a)).json()["id"]
+    assert client.get("/api/systems", headers=H(b)).json() == []
+    assert client.patch(f"/api/systems/{sid}", json={"name": "z"}, headers=H(b)).status_code == 404
+    assert client.post(f"/api/systems/{sid}/experiments", json={"idea": "z"}, headers=H(b)).status_code == 404
+    assert client.delete(f"/api/experiments/{xid}", headers=H(b)).status_code == 404
+    assert client.get("/api/me/export", headers=H(a)).json()["systems"][0]["name"] == "A's outreach"
+    assert client.delete("/api/me", headers=H(a)).json() == {"ok": True}
+    db = client.app.state.db
+    for table in ("systems", "experiments"):
+        assert db.query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"] == 0, table
+
+
 def test_other_accounts_suppress_pings_do_not_hide_opens(client, fake, clock):
     a = sign_in(client, fake, "g-a", "a@x.com")
     b = sign_in(client, fake, "g-b", "b@x.com")
@@ -496,7 +517,7 @@ def test_free_plan_tracks_but_locks_insights(client, fake, clock):
     assert r.status_code == 200
     assert client.get("/api/emails", headers=H(a)).json()[0]["campaign"] == "Launch"
     assert client.get("/api/campaign-names", headers=H(a)).json() == ["Launch"]
-    for path in ("/api/campaigns", "/api/stats", "/api/senders", "/api/senders/health", "/api/emails?campaign=Launch"):
+    for path in ("/api/campaigns", "/api/stats", "/api/senders", "/api/senders/health", "/api/emails?campaign=Launch", "/api/systems"):
         r = client.get(path, headers=H(a))
         assert r.status_code == 402, path
         assert r.json()["detail"]["error"] == "pro_required"

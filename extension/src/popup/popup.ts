@@ -11,6 +11,10 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string | null, .
 }
 
 function chip(e: EmailSummary): HTMLElement {
+  if (e.replied_at) {
+    const opens = e.status === "opened" ? ` · opened ×${e.opens}` : "";
+    return h("span", "chip replied", "Replied", h("small", null, ` ${relTime(e.replied_at)}${opens}`));
+  }
   if (e.status === "opened") return h("span", "chip open", `Opened ×${e.opens}`, h("small", null, ` ${relTime(e.last_open)}`));
   if (e.status === "prefetch_only") return h("span", "chip dim", "Prefetch only");
   if (e.self > 0) {

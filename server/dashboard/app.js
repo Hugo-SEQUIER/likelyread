@@ -71,6 +71,9 @@ function statusChip(e) {
   return h("span", { class: "chip" }, "Not opened");
 }
 
+const replyChip = (e) => h("span", { class: "chip reply", title: `Replied ${fmtDate(e.replied_at)}` }, "Replied", h("span", { class: "chip-sub" }, relTime(e.replied_at)));
+const chips = (e) => h("span", { class: "chips" }, statusChip(e), e.replied_at ? replyChip(e) : null);
+
 // ---------------------------------------------------------------- API
 
 class AuthError extends Error {}
@@ -232,6 +235,8 @@ async function viewOverview(root) {
       h("p", {}, `${pct(st.open_rate)} open rate${scope ? ` for ${scope}` : ""}. ${st.prefetch_only} only prefetched by Apple and ${st.self} of your own views were set aside.`),
     ),
     h("section", { class: "tiles" },
+      tile(pct(st.reply_rate), "Replied", `${st.replied} of ${st.emails} emails`),
+      tile(duration(st.median_time_to_reply), "Median time to reply"),
       tile(st.opens, "Opens in total", `${st.opens_last_7d} in the last 7 days`),
       tile(duration(st.median_time_to_open), "Median time to first open"),
       tile(st.prefetch_only, "Prefetch only", "Apple Mail, not counted"),
@@ -265,14 +270,15 @@ async function viewOverviewFree(root) {
   const { data, total } = await api("/api/emails?limit=1000");
   if (!total) return root.append(emptyState());
   const opened = data.filter((e) => e.opens > 0);
+  const replied = data.filter((e) => e.replied_at).length;
   const recent = [...opened].sort((a, b) => b.last_open - a.last_open).slice(0, 10);
   root.append(
     h("section", { class: "headline" },
       h("h1", {}, `${opened.length} of ${data.length} emails`, h("br"), h("span", { class: "rate" }, "opened")),
-      h("p", {}, `In the last ${state.me.features.history_days} days. Every open is listed with its time and how it was loaded.`),
+      h("p", {}, `In the last ${state.me.features.history_days} days, ${replied} replied. Every open is listed with its time and how it was loaded.`),
     ),
     h("section", { class: "split" },
-      upsell("charts", "See what works", ["Open rate per campaign and per sending address", "Sender health: setup checks, a safe daily pace, spam-folder alerts", "30-day timeline and busiest hours", "Your full history, not only 30 days"]),
+      upsell("charts", "See what works", ["Open and reply rate per campaign and per sending address", "Systems: test one change at a time and see which option wins", "Sender health: setup checks, a safe daily pace, spam-folder alerts", "30-day timeline and busiest hours", "Your full history, not only 30 days"]),
       h("div", {},
         sectionHead("Recent opens"),
         recent.length
@@ -316,13 +322,15 @@ async function viewCampaigns(root) {
       sectionHead(`${data.length} campaign${data.length === 1 ? "" : "s"}`, best ? h("span", { class: "muted" }, `Best open rate: ${campaignLabel(best.name)}, ${pct(best.open_rate)}`) : null),
       h("div", { class: "table-wrap" },
         h("table", {},
-          h("thead", {}, h("tr", {}, ["Campaign", "Emails", "Opened", "Open rate", "Opens", "Time to open", "Last open", "Last sent", ""].map((t) => h("th", {}, t)))),
+          h("thead", {}, h("tr", {}, ["Campaign", "Emails", "Opened", "Open rate", "Replied", "Reply rate", "Opens", "Time to open", "Last open", "Last sent", ""].map((t) => h("th", {}, t)))),
           h("tbody", {}, data.map((c) =>
             h("tr", { class: "clickable", onclick: () => { location.hash = `#/emails?${qs({ campaign: campaignParam(c.name) })}`; } },
               h("td", { class: "strong" }, campaignLabel(c.name)),
               h("td", { class: "num" }, c.emails),
               h("td", { class: "num" }, c.opened, c.prefetch_only ? h("span", { class: "muted small" }, ` +${c.prefetch_only} prefetch`) : null),
               h("td", {}, rateCell(c.open_rate)),
+              h("td", { class: "num" }, c.replied),
+              h("td", {}, rateCell(c.reply_rate)),
               h("td", { class: "num" }, c.opens),
               h("td", {}, duration(c.median_time_to_open)),
               h("td", {}, relTime(c.last_open)),
@@ -359,7 +367,7 @@ async function viewEmails(root, params) {
   const search = h("input", { type: "search", placeholder: "Search subject, address, campaign", value: q, "aria-label": "Search" });
   search.addEventListener("keydown", (e) => { if (e.key === "Enter") go({ q: search.value.trim(), page: 0 }); });
   const statusSel = h("select", { "aria-label": "Status", onchange: (e) => go({ status: e.target.value, page: 0 }) },
-    [["", "Any status"], ["opened", "Opened"], ["not_opened", "Not opened"], ["prefetch_only", "Prefetch only"]].map(([v, l]) => h("option", { value: v, selected: v === status }, l)));
+    [["", "Any status"], ["opened", "Opened"], ["not_opened", "Not opened"], ["prefetch_only", "Prefetch only"], ["replied", "Replied"]].map(([v, l]) => h("option", { value: v, selected: v === status }, l)));
   const showFrom = state.senders.length > 1 || data.some((e) => e.sender);
 
   root.append(
@@ -376,7 +384,7 @@ async function viewEmails(root, params) {
                   h("td", { class: "ellipsis" }, e.recipients.join(", ") || h("span", { class: "muted" }, "unknown")),
                   h("td", {}, campaignTag(e.campaign)),
                   h("td", { title: fmtDate(e.sent_at) }, relTime(e.sent_at)),
-                  h("td", {}, statusChip(e)),
+                  h("td", {}, chips(e)),
                 ))),
             ))
         : h("p", { class: "empty" }, "No emails match these filters."),
@@ -400,6 +408,10 @@ async function viewEmail(root, id) {
     await api(`/api/emails/${encodeURIComponent(id)}`, { method: "DELETE" });
     location.hash = "#/emails";
   };
+  const toggleReply = async () => {
+    await api(`/api/emails/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ replied: !e.replied_at }) });
+    await render();
+  };
   const kindLabel = { open: "Open", self: "Self view", prefetch: "Prefetch" };
   const fact = (label, value) => h("div", { class: "fact" }, h("dt", {}, label), h("dd", {}, value));
 
@@ -407,13 +419,15 @@ async function viewEmail(root, id) {
     h("section", { class: "detail-head" },
       h("a", { href: "#/emails", class: "back" }, "← All emails"),
       h("h1", {}, e.subject || "(no subject)"),
-      h("div", {}, statusChip(e)),
+      h("div", { class: "inline-form" }, chips(e),
+        h("button", { class: "btn ghost small", type: "button", onclick: toggleReply, title: e.replied_at ? "Undo: no reply known" : "You saw a reply in Gmail" }, e.replied_at ? "Not replied" : "Mark as replied")),
     ),
     h("dl", { class: "facts" },
       fact("From", e.sender || "unknown"),
       fact("To", e.recipients.join(", ") || "unknown"),
       fact("Sent", fmtDate(e.sent_at)),
       fact("First open", e.first_open ? `${duration(e.first_open - e.sent_at)} after sending` : "not yet"),
+      fact("Reply", e.replied_at ? `${duration(e.replied_at - e.sent_at)} after sending` : "none known"),
     ),
     h("section", {},
       sectionHead(`${e.hits.length} hit${e.hits.length === 1 ? "" : "s"}`, h("span", { class: "muted" }, `${e.opens} open${e.opens === 1 ? "" : "s"}, ${e.self} self view${e.self === 1 ? "" : "s"}, ${e.prefetch} prefetch`)),
@@ -728,7 +742,7 @@ async function viewAccount(root) {
     ),
     !isPro && me.billing
       ? h("section", {},
-          sectionHead("Upgrade to Pro", h("span", { class: "muted" }, "Campaign analytics, sender health, charts, filters and full history")),
+          sectionHead("Upgrade to Pro", h("span", { class: "muted" }, "Campaign analytics, Systems, sender health, charts, filters and full history")),
           h("div", { class: "plans" },
             plan("pro_yearly", "Yearly", p.pro_yearly || "€36", " / year", "Three months free compared with monthly.", true),
             plan("pro_monthly", "Monthly", p.pro_monthly || "€5", " / month", "Cancel any time."),
@@ -877,6 +891,457 @@ async function viewAdmin(root, params) {
   );
 }
 
+// ---------------------------------------------------------------- systems
+
+const GOALS = [["reply_rate", "Reply rate"], ["open_rate", "Open rate"]];
+const GOAL_NOUN = { reply_rate: "replies", open_rate: "opens" };
+const SUGGESTIONS = ["Hook", "Subject length", "Link", "Targeting", "Send time"];
+const SYSTEM_TABS = [["results", "Results"], ["tests", "Tests"], ["details", "Details"]];
+const SMALL_SAMPLE = 20;
+const goalLabel = (goal) => (GOALS.find(([v]) => v === goal) || [goal, goal])[1];
+const field = (label, input, wide) => h("label", { class: `field${wide ? " wide" : ""}` }, h("span", {}, label), input);
+const plural = (n, word) => `${n.toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
+const andList = (xs) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+/** About how many emails, rounded so it does not look more precise than it is. */
+const about = (n) => (n < 100 ? Math.max(5, Math.round(n / 5) * 5) : Math.round(n / 10) * 10).toLocaleString();
+/** An unclear result that more emails would not settle: the options do about the same. */
+const noRealDifference = (r) => r.status === "unclear" && (r.emails_needed === null || r.emails_needed > 1000);
+const optionName = (v) => (v === null ? "Not set" : v);
+const scoreText = (x) => `${x.current === null ? "No emails yet" : `${pct(x.current)} ${GOAL_NOUN[x.goal]}`}${x.target === null ? "" : ` · target ${pct(x.target)}`}`;
+const bestSoFar = (x) => {
+  const c = x.categories.find((c) => c.result.status === "clear");
+  return c ? `Best so far: ${c.name}: ${c.result.leader}` : "No winner yet";
+};
+
+/** Current goal rate as a bar, with a mark at the target. */
+function scoreBar(x) {
+  return h("div", { class: "score-bar", role: "img", "aria-label": scoreText(x) },
+    h("div", { class: "score-fill", style: { width: pct(x.current) } }),
+    x.target === null ? null : h("div", { class: "score-target", style: { left: pct(x.target) } }));
+}
+
+function systemsLocked(root) {
+  root.append(
+    h("section", { class: "headline" },
+      h("h1", {}, "Systems", h("br"), h("span", { class: "rate" }, "on Pro")),
+      h("p", {}, "Test one change at a time in your outreach and see which version gets more replies.")),
+    upsell("systems", "Learn what works", ["Group your outreach into systems with a goal and a target", "Turn each campaign into a test of one change", "See which option wins, and when you need more emails to know"]));
+}
+
+/** Create a system, or edit one (then with notes and delete). Output: a form that saves, then onSaved(system). */
+function systemForm(sys, onSaved, onCancel) {
+  const name = h("input", { required: true, maxlength: 100, value: sys ? sys.name : "", placeholder: "Cold emails to game studios" });
+  const goal = h("select", {}, GOALS.map(([v, l]) => h("option", { value: v, selected: sys ? sys.goal === v : v === "reply_rate" }, l)));
+  const target = h("input", { type: "number", min: 0, max: 100, step: "any", value: sys && sys.target !== null ? Math.round(sys.target * 1000) / 10 : "", placeholder: "No target" });
+  const notes = sys ? h("textarea", { maxlength: 5000, rows: 2, placeholder: "Who it is for, what you send" }, sys.notes) : null;
+  const msg = h("span", { class: "muted small", role: "status" });
+  const del = async () => {
+    if (!confirm("Delete this system and its tests? The emails stay.")) return;
+    await api(`/api/systems/${encodeURIComponent(sys.id)}`, { method: "DELETE" });
+    location.hash = "#/systems";
+  };
+  return h("form", { class: "panel form-grid", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const body = { name: name.value.trim(), goal: goal.value, target: target.value === "" ? null : Number(target.value) / 100 };
+    if (notes) body.notes = notes.value;
+    try {
+      const { data } = sys
+        ? await api(`/api/systems/${encodeURIComponent(sys.id)}`, { method: "PATCH", body: JSON.stringify(body) })
+        : await api("/api/systems", { method: "POST", body: JSON.stringify(body) });
+      await onSaved(data);
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  } },
+    field("Name", name),
+    field("Goal", goal),
+    field("Target, in %", target),
+    notes ? field("Notes", notes, true) : null,
+    h("div", { class: "inline-form wide" },
+      h("button", { class: "btn primary", type: "submit" }, sys ? "Save" : "Create system"),
+      h("button", { class: "btn ghost", type: "button", onclick: onCancel }, "Cancel"),
+      msg,
+      sys ? h("button", { class: "btn danger small push", type: "button", onclick: del }, "Delete this system") : null));
+}
+
+async function viewSystems(root) {
+  if (!can("systems")) return systemsLocked(root);
+  const { data } = await api("/api/systems");
+  const formBox = h("div", { hidden: true });
+  const open = () => {
+    formBox.replaceChildren(systemForm(null, (sys) => { location.hash = `#/system/${sys.id}`; }, () => { formBox.hidden = true; }));
+    formBox.hidden = false;
+    formBox.querySelector("input").focus();
+  };
+  const newButton = h("button", { class: "btn primary", type: "button", onclick: open }, "New system");
+  root.append(
+    h("section", {},
+      sectionHead("Systems", data.length ? newButton : null),
+      formBox,
+      data.length
+        ? h("div", { class: "system-cards" }, data.map((x) =>
+            h("a", { class: "system-card", href: `#/system/${x.id}` },
+              h("h3", {}, x.name),
+              h("p", { class: "muted small" }, `${goalLabel(x.goal)} · ${x.target === null ? "no target" : `target ${pct(x.target)}`}`),
+              h("p", { class: "system-score" }, x.current === null ? "No emails yet" : `${pct(x.current)} ${GOAL_NOUN[x.goal]}`),
+              scoreBar(x),
+              h("p", { class: "muted small" }, `${plural(x.emails, "email")} · ${plural(x.experiments.length, "test")}`),
+              h("p", { class: `best${x.categories.some((c) => c.result.status === "clear") ? " found" : ""}` }, bestSoFar(x)))))
+        : h("div", { class: "empty-state" },
+            h("p", {}, "A system is an outreach you repeat, like cold emails to game studios. You test one change at a time and see what gets more replies."),
+            newButton),
+    ),
+  );
+}
+
+async function addCategory(sys, name) {
+  try {
+    await api(`/api/systems/${encodeURIComponent(sys.id)}/categories`, { method: "POST", body: JSON.stringify({ name }) });
+    await render();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+/** Buttons for the common things to change that the system does not have yet. */
+function suggestionChips(sys) {
+  const have = new Set(sys.categories.map((c) => c.name.toLowerCase()));
+  const left = SUGGESTIONS.filter((s) => !have.has(s.toLowerCase()));
+  return left.length ? h("div", { class: "suggestions" }, left.map((s) => h("button", { class: "chip add", type: "button", onclick: () => addCategory(sys, s) }, `+ ${s}`))) : null;
+}
+
+/** The one thing to do next on this system, from its numbers. Output: [text, extra element]. */
+function nextStep(sys, newTest) {
+  const button = (label) => h("button", { class: "btn primary small", type: "button", onclick: newTest }, label);
+  if (!sys.categories.length) return ["Say what you'll change in your emails.", suggestionChips(sys)];
+  if (!sys.experiments.length) return ["Create your first test.", button("New test")];
+  const thin = sys.categories.find((c) => c.result.status === "not_enough");
+  if (thin) {
+    const tried = thin.values.filter((v) => v.value !== null && v.emails > 0).length;
+    return [`Try ${tried ? "a second" : "a first"} option for ${thin.name}.`, button("New test")];
+  }
+  const open = sys.categories.find((c) => c.result.status === "unclear" && !noRealDifference(c.result));
+  if (open) {
+    const r = open.result;
+    return [`Keep sending: about ${about(r.emails_needed)} more emails per option will settle ${open.name} (${r.leader} vs ${r.runner_up}).`, null];
+  }
+  const allClear = sys.categories.every((c) => c.result.status === "clear");
+  return [allClear ? "Everything you tested has a winner. Try something new to change." : "More emails will not settle what you tested so far. Try something new to change.", suggestionChips(sys)];
+}
+
+/** One sentence that says how a category is going. */
+function categoryHeadline(sys, c) {
+  const r = c.result;
+  const rateOf = (value) => (c.values.find((v) => v.value === value) || {})[sys.goal] || 0;
+  if (r.status === "clear") return `${r.leader} wins: ${pct(rateOf(r.leader))} ${GOAL_NOUN[sys.goal]} vs ${pct(rateOf(r.runner_up))} (${r.runner_up})`;
+  if (r.status === "unclear") {
+    return noRealDifference(r)
+      ? `No real difference so far (${r.leader} ${pct(rateOf(r.leader))} vs ${r.runner_up} ${pct(rateOf(r.runner_up))})`
+      : `${r.leader} looks better (${pct(rateOf(r.leader))} vs ${pct(rateOf(r.runner_up))}), not sure yet`;
+  }
+  return c.values.some((v) => v.value !== null && v.emails > 0) ? "Only one option tried so far" : "Not tested yet";
+}
+
+const STATUS_ORDER = { clear: 0, unclear: 1, not_enough: 2 };
+
+function resultsTab(sys, filters, go) {
+  const key = (c, v) => `${c.id}:${v.value === null ? "" : v.value}`;
+  const toggle = (k) => go(filters.includes(k) ? filters.filter((f) => f !== k) : [...filters, k]);
+  const rename = async (c) => {
+    const next = prompt(`Rename "${c.name}" to:`, c.name);
+    if (next === null || !next.trim() || next.trim() === c.name) return;
+    try {
+      await api(`/api/categories/${encodeURIComponent(c.id)}`, { method: "PATCH", body: JSON.stringify({ name: next.trim() }) });
+      await render();
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+  const del = async (c) => {
+    if (!confirm(`Stop tracking "${c.name}"? Its options are removed from every test.`)) return;
+    await api(`/api/categories/${encodeURIComponent(c.id)}`, { method: "DELETE" });
+    go(filters.filter((f) => !f.startsWith(`${c.id}:`)));
+  };
+
+  const newName = h("input", { required: true, maxlength: 60, placeholder: "Something else, e.g. Opening line", "aria-label": "What you change" });
+  const addBox = h("div", { class: "panel", hidden: true },
+    h("p", {}, "What do you change from one campaign to the next?"),
+    suggestionChips(sys),
+    h("form", { class: "inline-form", onsubmit: (ev) => { ev.preventDefault(); addCategory(sys, newName.value.trim()); } },
+      newName, h("button", { class: "btn", type: "submit" }, "Add")));
+
+  const option = (c, v, scale) => {
+    const k = key(c, v);
+    const on = filters.includes(k);
+    const w = (x) => `${Math.min(100, (x / scale) * 100)}%`;
+    const rate = v[sys.goal];
+    return h("button", {
+      type: "button", "aria-pressed": String(on), onclick: () => toggle(k),
+      class: `option${v.winner ? " winner" : ""}${v.value === null ? " none" : ""}${on ? " on" : ""}`,
+      title: v.ci ? `Likely between ${pct(v.ci[0])} and ${pct(v.ci[1])}. Click to see only these emails.` : "No emails yet",
+    },
+      h("span", { class: "option-name" }, optionName(v.value), v.winner ? h("span", { class: "chip winner" }, "Winner") : null),
+      h("span", { class: "option-bar" },
+        v.ci ? h("span", { class: "option-range", style: { left: w(v.ci[0]), width: w(v.ci[1] - v.ci[0]) } }) : null,
+        h("span", { class: "option-fill", style: { width: w(rate) } })),
+      h("span", { class: "option-rate" }, pct(rate)),
+      h("span", { class: "option-emails" }, plural(v.emails, "email")));
+  };
+  const card = (c) => {
+    const scale = Math.max(0.1, ...c.values.map((v) => (v.ci ? v.ci[1] : v[sys.goal])));
+    const r = c.result;
+    return h("article", { class: `result-card ${r.status}` },
+      h("div", { class: "result-head" },
+        h("h3", {}, c.name),
+        h("details", { class: "menu" },
+          h("summary", { "aria-label": `Options for ${c.name}` }, "⋯"),
+          h("div", { class: "menu-list" },
+            h("button", { type: "button", onclick: () => rename(c) }, "Rename"),
+            h("button", { type: "button", class: "danger", onclick: () => del(c) }, "Delete")))),
+      h("p", { class: "result-line", title: r.p_value === null ? "" : `${pValue(r.p_value)} (chance that a gap this big is luck)` }, categoryHeadline(sys, c)),
+      r.status === "unclear"
+        ? h("p", { class: "muted small" }, noRealDifference(r) ? "These options do about as well. Try something else." : `About ${about(r.emails_needed)} more emails per option will tell.`)
+        : null,
+      c.values.length ? h("div", { class: "options" }, c.values.map((v) => option(c, v, scale))) : null);
+  };
+
+  return h("section", {},
+    sectionHead("What you change", h("button", { class: "btn", type: "button", onclick: () => { addBox.hidden = !addBox.hidden; } }, "+ Add")),
+    addBox,
+    sys.categories.length
+      ? h("div", { class: "result-cards" }, [...sys.categories].sort((a, b) => STATUS_ORDER[a.result.status] - STATUS_ORDER[b.result.status]).map(card))
+      : h("p", { class: "empty" }, "Nothing yet. Add what you change between campaigns, such as Hook or Link."),
+    sys.categories.length ? h("p", { class: "muted small hint" }, "Bars show the rate; the light band is where it likely is. Click an option to see only its emails.") : null);
+}
+
+/** The guided panel to create a test, or edit one. A new test starts from the most recent one's options. */
+function testPanel(sys, exp, names, latest, onClose) {
+  const start = exp ? exp.values : (latest ? latest.values : {});
+  const idea = h("input", { required: true, maxlength: 500, value: exp ? exp.idea : "", placeholder: "A question as the first line" });
+  const campaign = h("input", { list: "test-campaigns", maxlength: 100, value: exp ? exp.campaign || "" : "", placeholder: "Pick one or type a new name" });
+  const note = h("textarea", { maxlength: 5000, rows: 2, placeholder: "Anything worth remembering" }, exp ? exp.note : "");
+  const warning = h("p", { class: "nudge", role: "status", hidden: true });
+  const inputs = sys.categories.map((c) => ({
+    c,
+    input: h("input", { list: `options-${c.id}`, maxlength: 100, value: start[c.id] || "", placeholder: "Not set", oninput: () => check() }),
+    list: h("datalist", { id: `options-${c.id}` }, c.values.filter((v) => v.value !== null).map((v) => h("option", { value: v.value }))),
+  }));
+  const check = () => {
+    if (exp || !latest) return;
+    const changed = inputs.filter(({ c, input }) => input.value.trim() !== (latest.values[c.id] || "")).map(({ c }) => c.name);
+    warning.hidden = changed.length < 2;
+    warning.textContent = `You're changing ${andList(changed)} at once: you won't know which one worked.`;
+  };
+  const msg = h("span", { class: "muted small", role: "status" });
+  const step = (n, title, ...body) => h("li", { class: "test-step" }, h("span", { class: "connect-n" }, n), h("div", {}, h("h3", {}, title), ...body));
+  const panel = h("form", { class: "panel test-panel", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const body = {
+      idea: idea.value.trim(),
+      campaign: campaign.value.trim() || null,
+      values: Object.fromEntries(inputs.map(({ c, input }) => [c.id, input.value.trim()])),
+      note: note.value,
+    };
+    try {
+      if (exp) await api(`/api/experiments/${encodeURIComponent(exp.id)}`, { method: "PATCH", body: JSON.stringify(body) });
+      else await api(`/api/systems/${encodeURIComponent(sys.id)}/experiments`, { method: "POST", body: JSON.stringify(body) });
+      await render();
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  } },
+    h("h2", {}, exp ? "Edit test" : "New test"),
+    h("ol", { class: "test-steps" },
+      step("1", "What are you trying?", idea),
+      step("2", "Campaign", campaign, h("datalist", { id: "test-campaigns" }, names.map((n) => h("option", { value: n }))),
+        h("p", { class: "muted small" }, "Pick this campaign in Gmail when you send these emails.")),
+      step("3", "What changes",
+        inputs.length
+          ? h("div", { class: "change-fields" }, inputs.map(({ c, input, list }) => field(c.name, [input, list])))
+          : h("p", { class: "muted" }, "Nothing to compare yet. Add what you change under Results."),
+        !exp && latest ? h("p", { class: "muted small" }, "Filled in from your last test. Change one thing.") : null,
+        warning),
+      step("4", "Note (optional)", note)),
+    h("div", { class: "inline-form" },
+      h("button", { class: "btn primary", type: "submit" }, exp ? "Save test" : "Create test"),
+      h("button", { class: "btn ghost", type: "button", onclick: onClose }, "Cancel"),
+      msg));
+  return panel;
+}
+
+function testsTab(sys, names, latest, openNew) {
+  const box = h("div", {});
+  const close = () => box.replaceChildren();
+  const show = (exp) => {
+    box.replaceChildren(testPanel(sys, exp, names, latest, close));
+    box.querySelector("input").focus();
+    box.scrollIntoView({ block: "start" });
+  };
+  const del = async (exp) => {
+    if (!confirm("Delete this test? Its emails stay.")) return;
+    await api(`/api/experiments/${encodeURIComponent(exp.id)}`, { method: "DELETE" });
+    await render();
+  };
+  const rateRow = (label, x) => h("div", { class: "test-rate" }, h("span", { class: "muted small" }, label), rateCell(x));
+  const card = (e) => h("article", { class: "test-card" },
+    h("div", { class: "test-main" },
+      h("h3", {}, e.idea),
+      h("p", { class: "small" }, e.campaign ? h("a", { class: "tag", href: `#/emails?${qs({ campaign: e.campaign })}` }, e.campaign) : campaignTag(null)),
+      h("div", { class: "chips" }, sys.categories.filter((c) => e.values[c.id]).map((c) => h("span", { class: "chip" }, `${c.name}: ${e.values[c.id]}`))),
+      e.note ? h("p", { class: "muted small test-note" }, e.note) : null),
+    h("div", { class: "test-nums" },
+      h("p", { class: "small" }, plural(e.emails, "email"), e.emails < SMALL_SAMPLE ? h("span", { class: "muted", title: `Fewer than ${SMALL_SAMPLE} emails: too few to tell` }, " · small sample") : null),
+      rateRow("Replies", e.reply_rate),
+      rateRow("Opens", e.open_rate)),
+    h("div", { class: "test-actions" },
+      h("button", { class: "btn ghost small", type: "button", onclick: () => show(e) }, "Edit"),
+      h("button", { class: "btn danger small", type: "button", onclick: () => del(e) }, "Delete")));
+  if (openNew) queueMicrotask(() => show(null));
+  return h("section", {},
+    sectionHead(plural(sys.experiments.length, "test"), h("button", { class: "btn primary", type: "button", onclick: () => show(null) }, "New test")),
+    box,
+    sys.experiments.length
+      ? h("div", { class: "test-cards" }, sys.experiments.map(card))
+      : h("p", { class: "empty" }, "No tests here yet. One campaign is one test: say what you try, then send its emails from Gmail."));
+}
+
+const signed = (x, digits) => `${x > 0 ? "+" : x < 0 ? "−" : ""}${Math.abs(x).toFixed(digits)}`;
+const pts = (diff) => `${signed(Math.round(diff * 100), 0)} pts`;
+const matrixLabel = (l) => (l.kind === "value" ? `${l.category}: ${l.value}` : l.name === "opened" ? "Opened" : "Replied");
+const pNumber = (p) => (p < 0.001 ? "< 0.001" : p < 0.01 ? p.toFixed(3) : p.toFixed(2));
+const pValue = (p) => (p < 0.001 ? "p < 0.001" : `p = ${pNumber(p)}`);
+
+/** Save a file from the authenticated API through a blob URL. */
+async function download(path, fallbackName) {
+  const res = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
+  if (!res.ok) return alert(`Download failed: ${res.status}`);
+  const name = (res.headers.get("Content-Disposition") || "").match(/filename="?([^";]+)"?/);
+  const url = URL.createObjectURL(await res.blob());
+  const a = h("a", { href: url, download: name ? name[1] : fallbackName });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Correlation heatmap: red when two things go together, blue when they do not. */
+function correlationMatrix(m) {
+  const outcome = (i) => m.labels[i].kind === "outcome";
+  const cell = (r, i, j) => {
+    const a = m.labels[i];
+    const b = m.labels[j];
+    if (i === j) return h("td", { class: "diag" }, "");
+    if (a.kind === "value" && b.kind === "value" && a.category_id === b.category_id) {
+      return h("td", { class: "same", title: "Options of the same thing never go out together" }, "");
+    }
+    const cls = `${outcome(j) || outcome(i) ? "outcome" : ""}${r !== null && Math.abs(r) > 0.5 ? " strong" : ""}`;
+    const style = r === null ? null : { backgroundColor: r >= 0 ? `rgba(217, 43, 33, ${Math.abs(r)})` : `rgba(37, 99, 235, ${Math.abs(r)})` };
+    return h("td", { class: cls, style, title: `${matrixLabel(a)} and ${matrixLabel(b)}` }, r === null ? "–" : signed(r, 2));
+  };
+  return h("div", { class: "table-wrap" },
+    h("table", { class: "matrix", "aria-label": "Correlations" },
+      h("thead", {}, h("tr", {}, h("th", {}), m.labels.map((l, j) => h("th", { class: outcome(j) ? "outcome" : "" }, matrixLabel(l))))),
+      h("tbody", {}, m.r.map((row, i) =>
+        h("tr", {}, h("th", { class: outcome(i) ? "outcome" : "" }, matrixLabel(m.labels[i])), row.map((r, j) => cell(r, i, j)))))));
+}
+
+/** What moves the goal metric: effects per option, correlations and confounded pairs. */
+function systemStats(sys, st, csvPath) {
+  const goal = goalLabel(st.goal).toLowerCase();
+  const csv = h("button", { class: "btn", type: "button", onclick: () => download(csvPath, "likelyread-system.csv") }, "Download CSV");
+  const head = sectionHead(`What moves the ${goal}`, csv);
+  if (st.emails < 2 || !sys.categories.length) {
+    return h("section", {}, head, h("p", { class: "empty" }, "This needs at least two emails and one thing you change."));
+  }
+  return h("section", { class: "stats" },
+    head,
+    st.confounded.map((c) => h("p", { class: "nudge" },
+      `${c.a.value} and ${c.b.value} almost ${c.r > 0 ? "always" : "never"} went out together (r = ${signed(c.r, 2)}): their effects cannot be told apart. Vary them separately.`)),
+    st.effects.length
+      ? h("div", { class: "table-wrap" },
+          h("table", { "aria-label": "Effects" },
+            h("thead", {}, h("tr", {}, ["Option", "Emails", `${goalLabel(st.goal)} vs without`, "Difference", "p", ""].map((t) => h("th", {}, t)))),
+            h("tbody", {}, st.effects.map((e) =>
+              h("tr", { class: e.significant ? "" : "dimrow" },
+                h("td", {}, h("span", { class: "muted small" }, `${e.category}: `), h("span", { class: "strong" }, e.value)),
+                h("td", { class: "num" }, e.emails.toLocaleString()),
+                h("td", { class: "num" }, `${pct(e.rate)} vs ${e.rate_without === null ? "–" : pct(e.rate_without)}`),
+                h("td", { class: `num diff${e.diff > 0 ? " up" : e.diff < 0 ? " down" : ""}` }, e.diff === null ? "–" : pts(e.diff)),
+                h("td", { class: "num" }, e.p_value === null ? "–" : pNumber(e.p_value)),
+                h("td", {}, e.significant ? h("span", { class: "chip winner" }, "clear") : h("span", { class: "muted small" }, "not clear yet")),
+              ))),
+          ))
+      : h("p", { class: "empty" }, "No options with emails yet."),
+    h("h3", { class: "stats-sub" }, "What goes together"),
+    h("p", { class: "muted small" }, "How often two things go together, from −1 to 1. Correlation is not proof that one causes the other."),
+    correlationMatrix(st.matrix));
+}
+
+async function viewSystem(root, id, params, tab) {
+  if (!can("systems")) return systemsLocked(root);
+  if (!SYSTEM_TABS.some(([t]) => t === tab)) tab = "results";
+  const filters = params.getAll("value");
+  const path = `/api/systems/${encodeURIComponent(id)}`;
+  const query = filters.length ? `?${new URLSearchParams(filters.map((v) => ["value", v]))}` : "";
+  const [{ data: sys }, { data: names }, all, stats] = await Promise.all([
+    api(path + query),
+    api("/api/campaign-names"),
+    // The next step and a new test's starting options come from every test, whatever the filters.
+    filters.length ? api(path).then(({ data }) => data) : null,
+    tab === "details" ? api(`${path}/stats${query}`).then(({ data }) => data) : null,
+  ]);
+  const full = all || sys;
+  const link = (t, next = filters) => `#/system/${id}/${t}${next.length ? `?${new URLSearchParams(next.map((v) => ["value", v]))}` : ""}`;
+  const go = (next) => {
+    if (location.hash === link(tab, next)) render();
+    else location.hash = link(tab, next);
+  };
+  const newTest = () => {
+    state.newTest = true;
+    if (tab === "tests") render();
+    else location.hash = link("tests");
+  };
+  const openNew = state.newTest;
+  state.newTest = false;
+
+  const editBox = h("div", { hidden: true });
+  const edit = () => {
+    editBox.replaceChildren(systemForm(sys, render, () => { editBox.hidden = true; }));
+    editBox.hidden = false;
+  };
+  const named = (k) => {
+    const [cid, ...rest] = k.split(":");
+    const c = full.categories.find((x) => String(x.id) === cid);
+    return `${c ? c.name : "?"}: ${rest.join(":") || "Not set"}`;
+  };
+  const [stepText, stepExtra] = nextStep(full, newTest);
+
+  root.append(
+    h("section", { class: "system-head" },
+      h("a", { href: "#/systems", class: "back" }, "← All systems"),
+      h("div", { class: "system-title" }, h("h1", {}, sys.name), h("button", { class: "btn ghost small", type: "button", onclick: edit }, "Edit")),
+      editBox,
+      h("div", { class: "system-score-row" },
+        h("p", { class: "system-score" }, scoreText(sys)),
+        scoreBar(sys),
+        h("p", { class: "muted small" }, `${plural(sys.emails, "email")} · ${plural(sys.experiments.length, "test")}`)),
+      sys.notes ? h("p", { class: "notes" }, sys.notes) : null,
+      h("div", { class: "next-step" }, h("p", { class: "eyebrow" }, "Next step"), h("p", { class: "next-text" }, stepText), stepExtra)),
+    h("div", { class: "system-body" },
+      h("nav", { class: "subtabs", "aria-label": "System" },
+        SYSTEM_TABS.map(([t, label]) => h("a", { href: link(t), class: t === tab ? "active" : "", "aria-current": t === tab ? "page" : null }, label))),
+      filters.length
+        ? h("div", { class: "filter-chips" },
+            h("span", { class: "muted small" }, "Showing only:"),
+            filters.map((k) => h("button", { type: "button", class: "chip", title: "Remove this filter", onclick: () => go(filters.filter((f) => f !== k)) }, named(k), " ×")),
+            h("button", { class: "btn ghost small", type: "button", onclick: () => go([]) }, "Clear"))
+        : null,
+      tab === "tests" ? testsTab(sys, names, full.experiments[0], openNew)
+        : tab === "details" ? systemStats(sys, stats, `${path}/export.csv${query}`)
+        : resultsTab(sys, filters, go)),
+  );
+}
+
 // ---------------------------------------------------------------- sender health
 
 const healthLabel = { ok: "Healthy", warn: "Check", bad: "Fix now", unknown: "Unknown", fail: "Missing" };
@@ -971,8 +1436,8 @@ async function render() {
   const raw = location.hash.replace(/^#\/?/, "") || "overview";
   const [path, query] = raw.split("?");
   const params = new URLSearchParams(query || "");
-  const [section, arg] = path.split("/");
-  const tab = section === "email" ? "emails" : section;
+  const [section, arg, sub] = path.split("/");
+  const tab = { email: "emails", system: "systems" }[section] || section;
   document.querySelectorAll(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
   root.replaceChildren(h("div", { class: "loading" }, "Loading…"));
   try {
@@ -984,6 +1449,8 @@ async function render() {
     else if (section === "senders") await viewSenders(frag);
     else if (section === "extension-connected") viewExtensionConnected(frag);
     else if (section === "campaigns") await viewCampaigns(frag);
+    else if (section === "systems") await viewSystems(frag);
+    else if (section === "system" && arg) await viewSystem(frag, arg, params, sub);
     else if (section === "emails") await viewEmails(frag, params);
     else if (section === "email" && arg) await viewEmail(frag, arg);
     else if (!can("stats")) await viewOverviewFree(frag);

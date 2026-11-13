@@ -153,7 +153,8 @@ CREATE TABLE IF NOT EXISTS emails (
   campaign    TEXT,
   sender      TEXT,
   account_id  TEXT,
-  created_at  REAL
+  created_at  REAL,
+  replied_at  REAL      -- first reply from a recipient, NULL = none known
 );
 CREATE TABLE IF NOT EXISTS hits (
   id        INTEGER PRIMARY KEY,
@@ -174,6 +175,34 @@ CREATE TABLE IF NOT EXISTS sender_settings (
   established  INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (acct, sender)
 );
+CREATE TABLE IF NOT EXISTS systems (       -- see systems.py
+  id          TEXT PRIMARY KEY,
+  account_id  TEXT,
+  name        TEXT NOT NULL,
+  goal        TEXT NOT NULL,               -- reply_rate | open_rate
+  target      REAL,                        -- 0..1, NULL = none
+  notes       TEXT NOT NULL DEFAULT '',
+  created_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS experiments (
+  id          TEXT PRIMARY KEY,
+  account_id  TEXT,
+  system_id   TEXT NOT NULL,
+  idea        TEXT NOT NULL,
+  campaign    TEXT,                        -- the campaign whose emails test it
+  note        TEXT NOT NULL DEFAULT '',
+  category_values TEXT NOT NULL DEFAULT '{}',  -- JSON {category id: value}
+  created_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS categories (    -- what a system varies: Hook, Link, Length...
+  id          TEXT PRIMARY KEY,
+  account_id  TEXT,
+  system_id   TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_systems_account ON systems(account_id);
+CREATE INDEX IF NOT EXISTS idx_experiments_account ON experiments(account_id);
 CREATE INDEX IF NOT EXISTS idx_hits_email ON hits(email_id);
 CREATE INDEX IF NOT EXISTS idx_hits_ts ON hits(ts);
 CREATE INDEX IF NOT EXISTS idx_supp_email ON suppressions(email_id);
@@ -185,9 +214,9 @@ CREATE INDEX IF NOT EXISTS idx_emails_sent ON emails(sent_at);
 # --------------------------------------------------------------------------
 
 FEATURES: dict[str, dict] = {
-    "selfhost": {"campaigns": True, "stats": True, "senders": True, "history_days": None, "daily_limit": None},
-    "pro": {"campaigns": True, "stats": True, "senders": True, "history_days": None, "daily_limit": 5000},
-    "free": {"campaigns": False, "stats": False, "senders": False, "history_days": 30, "daily_limit": 500},
+    "selfhost": {"campaigns": True, "stats": True, "senders": True, "systems": True, "history_days": None, "daily_limit": None},
+    "pro": {"campaigns": True, "stats": True, "senders": True, "systems": True, "history_days": None, "daily_limit": 5000},
+    "free": {"campaigns": False, "stats": False, "senders": False, "systems": False, "history_days": 30, "daily_limit": 500},
 }
 
 
@@ -246,6 +275,8 @@ class DB:
                 self.conn.execute("ALTER TABLE emails ADD COLUMN account_id TEXT")
             if "created_at" not in cols:  # server time of first registration (sent_at is client-derived)
                 self.conn.execute("ALTER TABLE emails ADD COLUMN created_at REAL")
+            if "replied_at" not in cols:  # databases created before replies were tracked
+                self.conn.execute("ALTER TABLE emails ADD COLUMN replied_at REAL")
             hcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(hits)")}
             if "net" not in hcols:
                 self.conn.execute("ALTER TABLE hits ADD COLUMN net TEXT")
@@ -379,6 +410,27 @@ def match_suppressions(hits: list, sent_at: float | None, supps: list[float], cf
     return taken
 
 
+def address_of(value: str) -> str:
+    """The bare lower-cased address in "Name <a@b.c>" or "a@b.c"."""
+    m = re.search(r"<([^<>]+)>", value)
+    return (m.group(1) if m else value).strip().lower()
+
+
+def rates(items: list[dict]) -> dict:
+    """Opens and replies of a group of email summaries (a campaign, a system, the stats)."""
+    opened = [s for s in items if s["opens"] > 0]
+    replied = [s for s in items if s["replied_at"] is not None]
+    ttr = [s["replied_at"] - s["sent_at"] for s in replied if s["sent_at"] is not None]
+    return {
+        "emails": len(items),
+        "opened": len(opened),
+        "open_rate": len(opened) / len(items) if items else 0,
+        "replied": len(replied),
+        "reply_rate": len(replied) / len(items) if items else 0,
+        "median_time_to_reply": statistics.median(ttr) if ttr else None,
+    }
+
+
 def status_of(summary: dict) -> str:
     if summary["opens"] > 0:
         return "opened"
@@ -405,7 +457,7 @@ class Store:
         sender: str | None = None,
         since: float | None = None,
     ) -> list[sqlite3.Row]:
-        sql = "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails"
+        sql = "SELECT id, subject, recipients, sent_at, campaign, sender, replied_at FROM emails"
         where: list[str] = ["account_id IS ?"]
         params: list[object] = [acct]
         if campaign == NO_CAMPAIGN:
@@ -476,6 +528,7 @@ class Store:
             "last_open": max(opens) if opens else None,
             "prefetch": sum(1 for h in classified if h["kind"] == "prefetch"),
             "self": sum(1 for h in classified if h["kind"] == "self"),
+            "replied_at": email["replied_at"],
         }
         summary["status"] = status_of(summary)
         return summary
@@ -498,7 +551,7 @@ class Store:
 
     def one(self, acct: str | None, email_id: str, since: float | None = None) -> dict | None:
         rows = self.db.query(
-            "SELECT id, subject, recipients, sent_at, campaign, sender FROM emails WHERE id = ? AND account_id IS ?",
+            "SELECT id, subject, recipients, sent_at, campaign, sender, replied_at FROM emails WHERE id = ? AND account_id IS ?",
             (email_id, acct),
         )
         if not rows:
@@ -561,12 +614,22 @@ class EmailIn(BaseModel):
 
 
 class EmailPatch(BaseModel):
+    """Only the fields sent change: {"replied": true} keeps the campaign."""
+
     campaign: str | None = Field(default=None, max_length=200)
+    replied: bool | None = None
 
     @field_validator("campaign")
     @classmethod
     def _campaign(cls, v: str | None) -> str | None:
         return _clean_campaign(v)
+
+
+class ReplyIn(BaseModel):
+    """A reply the extension saw in a Gmail conversation."""
+
+    from_: str = Field(alias="from", max_length=320)
+    age: float = Field(default=0, ge=0, le=MAX_AGE_SECONDS)
 
 
 class SenderSettingsIn(BaseModel):
@@ -693,6 +756,9 @@ class Api:
         self.store = store
         self.cloud = cloud
         self.dns_cache = dns_cache or health.DnsCache()
+        from systems import Systems  # systems.py imports this module
+
+        self.systems = Systems(db, store)
 
     def me(self, p: Principal) -> dict:
         if self.cloud is not None:
@@ -755,7 +821,9 @@ class Api:
         if sender:
             need(p, "senders")
         items = [s for s, _ in self.store.summaries(p.account_id, campaign, q, sender, p.since())]
-        if status:
+        if status == "replied":
+            items = [s for s in items if s["replied_at"] is not None]
+        elif status:
             items = [s for s in items if s["status"] == status]
         return items[offset : offset + limit], len(items)
 
@@ -777,6 +845,41 @@ class Api:
             raise HTTPException(status_code=404, detail="not found")
         return self.email(p, email_id)
 
+    def set_replied(self, p: Principal, email_id: str, replied: bool) -> dict:
+        """Marks an email replied (now, unless a reply is already known) or not replied."""
+        email_id = email_id.lower()
+        if self.store.one(p.account_id, email_id, p.since()) is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if replied:
+            self.db.execute(
+                "UPDATE emails SET replied_at = COALESCE(replied_at, MAX(?, sent_at)) WHERE id = ? AND account_id IS ?",
+                (time.time(), email_id, p.account_id),
+            )
+        else:
+            self.db.execute(
+                "UPDATE emails SET replied_at = NULL WHERE id = ? AND account_id IS ?", (email_id, p.account_id)
+            )
+        return self.email(p, email_id)
+
+    def reply(self, p: Principal, email_id: str, body: ReplyIn) -> dict:
+        """Records a reply seen in Gmail, only from one of the email's recipients: a
+        colleague's note or a forward in the same conversation is not an answer. Keeps
+        the earliest reply, never before the send."""
+        email_id = email_id.lower()
+        rows = self.db.query(
+            "SELECT recipients, replied_at FROM emails WHERE id = ? AND account_id IS ?", (email_id, p.account_id)
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="not found")
+        recipients = {address_of(r) for r in json.loads(rows[0]["recipients"] or "[]")}
+        if address_of(body.from_) not in recipients:
+            return {"ok": True, "replied_at": rows[0]["replied_at"]}
+        self.db.execute(
+            "UPDATE emails SET replied_at = MIN(COALESCE(replied_at, ?), MAX(?, sent_at)) WHERE id = ? AND account_id IS ?",
+            (time.time(), time.time() - body.age, email_id, p.account_id),
+        )
+        return {"ok": True, "replied_at": self.db.query("SELECT replied_at FROM emails WHERE id = ?", (email_id,))[0]["replied_at"]}
+
     def campaigns(self, p: Principal) -> list[dict]:
         need(p, "campaigns")
         groups: dict[str | None, list[dict]] = defaultdict(list)
@@ -791,9 +894,7 @@ class Api:
             out.append(
                 {
                     "name": name,
-                    "emails": len(items),
-                    "opened": len(opened),
-                    "open_rate": len(opened) / len(items) if items else 0,
+                    **rates(items),
                     "opens": sum(s["opens"] for s in items),
                     "prefetch_only": sum(1 for s in items if s["status"] == "prefetch_only"),
                     "first_sent": min(sent) if sent else None,
@@ -896,9 +997,7 @@ class Api:
         opened = [s for s in items if s["opens"] > 0]
         ttfo = [s["first_open"] - s["sent_at"] for s in opened if s["sent_at"] is not None]
         return {
-            "emails": len(items),
-            "opened": len(opened),
-            "open_rate": len(opened) / len(items) if items else 0,
+            **rates(items),
             "opens": sum(s["opens"] for s in items),
             "prefetch_only": sum(1 for s in items if s["status"] == "prefetch_only"),
             "self": sum(s["self"] for s in items),
@@ -1094,7 +1193,7 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         offset: int = Query(0, ge=0),
         campaign: str | None = Query(None, max_length=200),
         q: str | None = Query(None, max_length=200),
-        status: str | None = Query(None, pattern="^(opened|not_opened|prefetch_only)$"),
+        status: str | None = Query(None, pattern="^(opened|not_opened|prefetch_only|replied)$"),
         sender: str | None = Query(None, max_length=320),
     ):
         items, total = api.list_emails(p, limit, offset, campaign, q, status, sender)
@@ -1107,7 +1206,15 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
 
     @app.patch("/api/emails/{email_id}")
     def patch_email(email_id: str, body: EmailPatch, p: Principal = Depends(principal)):
-        return api.set_campaign(p, email_id, body.campaign)
+        if body.replied is not None:
+            api.set_replied(p, email_id, body.replied)
+        if "campaign" in body.model_fields_set or "replied" not in body.model_fields_set:
+            return api.set_campaign(p, email_id, body.campaign)
+        return api.email(p, email_id)
+
+    @app.post("/api/emails/{email_id}/reply")
+    def reply(email_id: str, body: ReplyIn, p: Principal = Depends(principal)):
+        return api.reply(p, email_id, body)
 
     @app.delete("/api/emails/{email_id}")
     def delete_email(email_id: str, p: Principal = Depends(principal)):
@@ -1175,6 +1282,9 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
             cur = db.execute(
                 "UPDATE emails SET campaign = ? WHERE account_id IS ? AND campaign = ?", (body.name, p.account_id, name)
             )
+            db.execute(
+                "UPDATE experiments SET campaign = ? WHERE account_id IS ? AND campaign = ?", (body.name, p.account_id, name)
+            )
         return {"ok": True, "updated": cur.rowcount}
 
     @app.get("/api/stats")
@@ -1186,6 +1296,10 @@ def create_app(cfg: Settings | None = None) -> FastAPI:
         tz: int = Query(0, ge=-14 * 60, le=14 * 60, description="minutes east of UTC"),
     ):
         return api.stats(p, campaign, sender, days, tz)
+
+    import systems
+
+    systems.register_routes(app, principal, api.systems)
 
     if cloud is not None:
         cloud.register_routes(app, principal)

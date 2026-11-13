@@ -40,7 +40,7 @@ export interface ContentConfig {
 }
 
 /** What Gmail's ticks need to know about one tracked email. */
-export type EmailStatus = Pick<EmailSummary, "status" | "opens" | "last_open" | "self">;
+export type EmailStatus = Pick<EmailSummary, "status" | "opens" | "last_open" | "self" | "replied_at">;
 
 /** Answer to a "status" message: null for an id the server does not know (not
  * registered yet, or past the plan's history). Ids it could not answer are left out. */
@@ -50,6 +50,8 @@ export type Message =
   | { type: "register"; email: PendingEmail; account?: string | null }
   | { type: "suppress"; id: string }
   | { type: "status"; ids: string[] }
+  /** A reply seen in a Gmail conversation. `age`: seconds since it was sent, when known. */
+  | { type: "reply"; id: string; from: string; age?: number }
   | { type: "setCampaign"; campaign: string }
   | { type: "getConfig" }
   | { type: "configChanged" };
@@ -85,6 +87,8 @@ export interface EmailSummary {
   prefetch: number;
   self: number;
   status: "opened" | "not_opened" | "prefetch_only";
+  /** First reply from a recipient, null when none is known. A separate fact from `status`. */
+  replied_at: number | null;
 }
 
 export interface Hit {

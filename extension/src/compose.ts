@@ -509,11 +509,16 @@ export interface OwnPixel {
   message: Element | null;
 }
 
+/** The signed-in account and the send-as addresses it sent tracked email from, lower-cased. */
+export function ownAddresses(cfg: ContentConfig, account: string | null): Set<string> {
+  return new Set([...cfg.senders, account || ""].filter(Boolean).map((s) => s.toLowerCase()));
+}
+
 export function ownPixels(doc: Document, cfg: ContentConfig, account: string | null): OwnPixel[] {
   const server = cfg.serverUrl;
   if (!server) return [];
   const host = new URL(server).host;
-  const own = new Set([...cfg.senders, account || ""].filter(Boolean).map((s) => s.toLowerCase()));
+  const own = ownAddresses(cfg, account);
   const inSent = /^#sent\b/.test(doc.defaultView?.location.hash || "");
   const found: OwnPixel[] = [];
   for (const img of Array.from(doc.querySelectorAll<HTMLImageElement>("img"))) {

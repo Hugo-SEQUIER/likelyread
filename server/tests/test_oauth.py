@@ -51,7 +51,7 @@ DOCS = {
 JSONRPC = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25"}
 # What apps that sign in get, Claude Code apart (cloud.FULL_TOOL_APPS).
 RESULTS_TOOLS = {"account", "list_emails", "get_email", "set_campaign", "campaign_names", "list_campaigns",
-                 "get_stats", "sender_health"}
+                 "get_stats", "sender_health", "mark_replied", "list_systems", "save_system", "save_experiment"}
 
 
 @pytest.fixture
@@ -732,7 +732,7 @@ def test_the_mcp_sdk_client_signs_in_like_claude_code(tmp_path, monkeypatch, goo
     finally:
         server.should_exit = True
         thread.join(timeout=10)
-    assert len(names) == 11 and "track_email" in names
+    assert len(names) == 15 and "track_email" in names
     assert answer["iss"] == base and storage.client.client_id == CLAUDE_CODE, "no registration: the document's URL"
     assert storage.tokens.refresh_token and storage.tokens.expires_in == 3600
 
