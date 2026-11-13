@@ -53,6 +53,7 @@ const receipts = new Receipts(document, {
   getConfig: tabConfig,
   accountEmail,
   status: async (ids) => ((await send({ type: "status", ids })) as StatusReply | undefined) ?? {},
+  reply: async (id, from, age) => ((await send({ type: "reply", id, from, age })) as { ok?: boolean } | undefined)?.ok === true,
   now: () => Date.now(),
 });
 

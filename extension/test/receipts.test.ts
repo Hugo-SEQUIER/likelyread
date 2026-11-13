@@ -18,30 +18,35 @@ const NOW = 1_800_000_000_000;
 const pixel = (id: string) => `<img src="https://ci3.googleusercontent.com/meips/AbC=s0-d-e1-ft#${SERVER}/p/${id}.gif">`;
 
 /** One message of a conversation: the header with sender and date, then the body. */
-function message(sender: string, body: string) {
+function message(sender: string, body: string, date = "Oct 24, 2026, 2:02 PM") {
   return `<div class="adn"><div class="gs">
     <div class="gE"><table class="cf gJ"><tbody><tr>
       <td class="gF"><h3 class="iw"><span class="gD" email="${sender}">Sender</span></h3></td>
-      <td class="gH"><div class="gK"><span class="g3" title="Oct 24, 2026, 2:02 PM">2:02 PM</span></div></td>
+      <td class="gH"><div class="gK"><span class="g3" title="${date}">2:02 PM</span></div></td>
     </tr></tbody></table></div>
     <div class="a3s">${body}</div>
   </div></div>`;
 }
 
-function setup(html: string, replies: StatusReply[] = [], cfg: Partial<ContentConfig> = {}) {
+function setup(html: string, replies: StatusReply[] = [], cfg: Partial<ContentConfig> = {}, account: string | null = ME) {
   const dom = new JSDOM(`<!doctype html><body>${html}</body>`, { url: "https://mail.google.com/mail/u/0/#inbox/abc" });
   const doc = dom.window.document;
   const asked: string[][] = [];
   let now = NOW;
   const pending: (() => void)[] = [];
+  const reported: [string, string, number | undefined][] = [];
   const config: ContentConfig = { configured: true, serverUrl: SERVER, trackByDefault: true, campaign: "", campaigns: [], senders: [], ...cfg };
   const receipts = new Receipts(doc, {
     getConfig: () => config,
-    accountEmail: () => ME,
+    accountEmail: () => account,
     status: (ids) => {
       asked.push(ids);
       const reply = replies.shift() ?? {};
       return new Promise((resolve) => pending.push(() => resolve(reply)));
+    },
+    reply: async (id, from, age) => {
+      reported.push([id, from, age]);
+      return true;
     },
     now: () => now,
   });
@@ -51,11 +56,15 @@ function setup(html: string, replies: StatusReply[] = [], cfg: Partial<ContentCo
     await new Promise((r) => setTimeout(r, 0));
   };
   const badges = () => Array.from(doc.querySelectorAll<HTMLAnchorElement>("a.lr-receipt"));
-  return { doc, receipts, asked, answer, badges, tick: (ms: number) => (now += ms) };
+  return { doc, receipts, asked, reported, answer, badges, tick: (ms: number) => (now += ms) };
 }
 
-const opened = (opens: number): EmailStatus => ({ status: "opened", opens, last_open: NOW / 1000 - 300, self: 0 });
-const unopened = (self = 0): EmailStatus => ({ status: "not_opened", opens: 0, last_open: null, self });
+const opened = (opens: number): EmailStatus => ({ status: "opened", opens, last_open: NOW / 1000 - 300, self: 0, replied_at: null });
+const unopened = (self = 0): EmailStatus => ({ status: "not_opened", opens: 0, last_open: null, self, replied_at: null });
+const replied = (): EmailStatus => ({ ...opened(1), replied_at: NOW / 1000 - 7200 });
+/** A header date as Gmail writes it in English, `ago` ms before NOW. */
+const headerDate = (ago: number) =>
+  new Date(NOW - ago).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 
 test("two red ticks once opened, before the date, linking to the email in the dashboard", async () => {
   const { receipts, asked, answer, badges, doc } = setup(message(ME, `Hi${pixel(A)}`), [{ [A]: opened(2) }]);
@@ -73,9 +82,9 @@ test("two red ticks once opened, before the date, linking to the email in the da
 });
 
 test("one grey tick says what is known: not opened, seen by you only, or Apple's prefetch", () => {
-  assert.deepEqual(describeStatus(unopened(), NOW), { opened: false, label: "Not opened yet", detail: "Tracked. Nobody has opened it yet." });
+  assert.deepEqual(describeStatus(unopened(), NOW), { opened: false, replied: false, label: "Not opened yet", detail: "Tracked. Nobody has opened it yet." });
   assert.equal(describeStatus(unopened(2), NOW).label, "Seen by you only");
-  assert.equal(describeStatus({ status: "prefetch_only", opens: 0, last_open: null, self: 1 }, NOW).label, "Prefetch only");
+  assert.equal(describeStatus({ status: "prefetch_only", opens: 0, last_open: null, self: 1, replied_at: null }, NOW).label, "Prefetch only");
   assert.equal(describeStatus(opened(1), NOW).label, "Opened");
   assert.equal(describeStatus(opened(1), NOW).detail, "Opened once, 5 min ago.");
   for (const st of [unopened(), unopened(1), opened(3)]) assert.doesNotMatch(describeStatus(st, NOW).detail, /\bread\b/i);
@@ -158,4 +167,61 @@ test("nothing when the extension is not set up, and a settings change clears the
   assert.equal(on.badges().length, 0);
   on.receipts.scan();
   assert.equal(on.asked.length, 2, "asked again after the refresh");
+});
+
+test("a reply wins over opens: two green ticks that say when", () => {
+  assert.deepEqual(describeStatus(replied(), NOW), { opened: true, replied: true, label: "Replied", detail: "Replied 2 h ago." });
+  assert.equal(describeStatus({ ...unopened(), replied_at: NOW / 1000 - 60 }, NOW).label, "Replied", "a reply counts even when the image never loaded");
+});
+
+test("a reply is reported for the nearest own tracked email above it, with its age", async () => {
+  const html =
+    message(ME, pixel(A)) +
+    message("ann@acme.com", "Thanks", headerDate(3_600_000)) +
+    message(ME, pixel(B)) +
+    message("Bob@Acme.com", "Sure", "lundi 4 janvier") +
+    message("ann@acme.com", "Again");
+  const { receipts, reported } = setup(html);
+  receipts.scan();
+  receipts.scan();
+  assert.deepEqual(reported, [
+    [A, "ann@acme.com", 3600],
+    [B, "bob@acme.com", undefined],
+    [B, "ann@acme.com", undefined],
+  ], "once per email and sender; no age when the date does not parse or is too old");
+});
+
+test("own messages never count as replies, and a reply under an own email without ticks is not guessed", () => {
+  const alias = "me@alias.com";
+  const html =
+    message("ann@acme.com", "Before anything of ours") +
+    message(ME, pixel(A)) +
+    message("ME@alias.com", "Untracked, from an alias") +
+    message("ann@acme.com", "Thanks") +
+    message(ME, pixel(B)) +
+    message(ME, "Untracked, or collapsed") +
+    message("bob@acme.com", "Sure");
+  const { receipts, reported } = setup(html, [], { senders: [alias] });
+  receipts.scan();
+  assert.deepEqual(reported, []);
+
+  const unknown = setup(message(ME, pixel(A)) + message("ann@acme.com", "Thanks"), [], {}, null);
+  unknown.receipts.scan();
+  assert.deepEqual(unknown.reported, [], "no account, no way to tell who replied");
+});
+
+test("after a reply is reported, the ticks are asked for again and say Replied", async () => {
+  const { receipts, asked, answer, badges } = setup(message(ME, pixel(A)) + message("ann@acme.com", "Thanks"), [
+    { [A]: opened(1) },
+    { [A]: replied() },
+  ]);
+  receipts.scan();
+  await answer();
+  assert.equal(asked.length, 2, "the reply was reported while the first question was out");
+  await answer();
+  const [badge] = badges();
+  assert.equal(badge.textContent, "Replied");
+  assert.ok(badge.classList.contains("is-replied"));
+  assert.ok(!badge.classList.contains("is-opened"));
+  assert.match(badge.title, /^Replied 2 h ago\./);
 });

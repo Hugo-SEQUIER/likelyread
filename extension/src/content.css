@@ -28,6 +28,7 @@
 /* Open status next to the date of your own tracked emails in a conversation: one grey tick, then two red ones once opened. */
 .lr-receipt { display: inline-flex; align-items: center; gap: 3px; height: 20px; margin-right: 8px; padding: 0 7px 0 4px; border-radius: 10px; color: #5f6368; font-size: 12px; font-weight: 400; line-height: 20px; text-decoration: none; white-space: nowrap; vertical-align: middle; transition: background-color 150ms ease; }
 .lr-receipt.is-opened { color: #d92b21; font-weight: 500; }
+.lr-receipt.is-replied { color: #188038; font-weight: 500; }
 .lr-receipt:hover { background: #f2f2f2; text-decoration: none; }
 .lr-receipt:focus-visible { outline: 2px solid #d92b21; outline-offset: 1px; }
 

@@ -23,6 +23,7 @@ main { max-height: 440px; overflow-y: auto; overflow-x: hidden; padding: 0 16px 
 .meta { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 .chip { flex: none; font-size: 13px; font-weight: 500; padding: 2px 9px; border-radius: 999px; background: var(--surface-2); color: #3f3f3f; white-space: nowrap; }
 .chip.open { background: var(--accent-tint); color: var(--accent-deep); }
+.chip.replied { background: #e6f4ea; color: #137333; }
 .chip.dim { background: #ececec; color: #8a8a8a; font-weight: 400; }
 .chip small { font-weight: 400; opacity: .8; }
 .hits { margin-top: 10px; display: grid; gap: 4px; cursor: default; }

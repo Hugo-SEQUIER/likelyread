@@ -1,4 +1,4 @@
-/** Background service worker: registration queue, suppress pings, open status for Gmail's ticks, DNR rules. */
+/** Background service worker: registration queue, suppress pings, open status and replies for Gmail's ticks, DNR rules. */
 import { backoffMs, dnrRules, MAX_RETRY_MS, normalizeServerUrl, UUID4_RE } from "./lib";
 import { CLOUD_URL } from "./cloud";
 import {
@@ -102,6 +102,20 @@ async function suppress(id: string): Promise<void> {
   }
 }
 
+/** A reply seen in Gmail. The server records it only when `from` is one of the
+ * email's recipients. Resolves true when the server answered. */
+async function reportReply(id: string, from: string, age: number | undefined): Promise<boolean> {
+  if (!UUID4_RE.test(id)) return false;
+  const settings = await getSettings();
+  if (!settings.serverUrl || !settings.token) return false;
+  try {
+    await apiFetch(settings, `/api/emails/${id}/reply`, { method: "POST", body: JSON.stringify({ from, age }) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Most emails one Gmail conversation asks about at once. */
 const MAX_STATUS_IDS = 20;
 
@@ -115,7 +129,7 @@ async function statuses(ids: string[]): Promise<StatusReply> {
     wanted.map(async (id) => {
       try {
         const e = await apiFetch<EmailSummary>(settings, `/api/emails/${id}`);
-        reply[id] = { status: e.status, opens: e.opens, last_open: e.last_open, self: e.self };
+        reply[id] = { status: e.status, opens: e.opens, last_open: e.last_open, self: e.self, replied_at: e.replied_at ?? null };
       } catch (err) {
         // 404: not registered yet, or not this account's. 402: past the Free plan's history.
         const status = err instanceof ApiError ? err.status : 0;
@@ -240,6 +254,10 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, sendResponse) => {
   }
   if (msg.type === "status") {
     statuses(Array.isArray(msg.ids) ? msg.ids : []).then(sendResponse);
+    return true;
+  }
+  if (msg.type === "reply") {
+    reportReply(msg.id, msg.from, msg.age).then((ok) => sendResponse({ ok }));
     return true;
   }
   return false;
