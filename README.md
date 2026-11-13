@@ -4,7 +4,7 @@ Open-source email open tracking for Gmail. It tells you when someone opens an em
 
 Two ways to use it:
 
-- **Likelyread Cloud** at [app.likelyread.com](https://app.likelyread.com): install the Chrome extension, sign in with Google, done. Free plan; Pro adds campaign analytics and full history. See [docs/CLOUD.md](docs/CLOUD.md).
+- **Likelyread Cloud** at [app.likelyread.com](https://app.likelyread.com): install the Chrome extension, sign in with Google, done. Free plan; Pro adds campaign analytics, Systems and full history. See [docs/CLOUD.md](docs/CLOUD.md).
 - **Self-hosted**: one small server (FastAPI + SQLite) behind Caddy, installed with one command. One token, every feature, nothing leaves your VPS. Instructions below.
 
 ![Dashboard overview](docs/screenshots/overview.png)
@@ -111,6 +111,19 @@ For each address you send from, the **Senders** tab shows three things:
 
 Nothing here sends email or fakes engagement. It reads DNS and your own tracking data. Agents get the same data with the `sender_health` tool or `likelyread health --from you@example.com`.
 
+### Replies and systems
+
+Likelyread also follows **replies**. When you open a conversation in Gmail, the extension sees an answer from one of the recipients under your tracked email and marks it replied: the ticks then say *Replied*. Only the sender's address and the time leave Gmail, never the reply itself. Replies Gmail never shows you (a conversation you did not open) are not seen: mark them with **Mark as replied** on the email's page. The Overview and Campaigns tabs show the reply rate and the median time to reply, and Emails has a *Replied* filter.
+
+The **Systems** tab is where you learn what works. A system is one outreach effort, for example *Cold emails to game founders*, with a goal (reply rate or open rate) and a target.
+
+1. **Say what you change** in your emails, such as *Hook*, *Link*, *Subject length* or *Targeting*. There are none by default; the page suggests a few.
+2. **Create a test**: what you are trying, the campaign that carries it, and its option for each thing you change (Hook *Question*, Length *Short*). A new test starts from the last one's options, so you change one thing at a time; if you change two, it warns you, since no result could then say which one worked.
+3. **Send** the emails from Gmail with that campaign picked.
+4. **Read Results**: one sentence per thing you change, such as "*Qualified* wins: 20% replies vs 6%" or "*Question* looks better, not sure yet", and a suggested next step. A winner is shown only when the lead is statistically clear; until then it says about how many more emails it needs. Click an option to see the results within it only, for example which hook wins among qualified prospects.
+
+The **Details** tab has the numbers behind it: each option's effect, a correlation matrix of options, opens and replies, a warning for options that always went out together, and a CSV of every email. Agents read the same with `list_systems` before writing the next batch. Systems are part of Pro on Likelyread Cloud.
+
 The dashboard is a static page with no data of its own: it reads the authenticated API with your token. Set `DASHBOARD=false` to turn it off.
 
 ## Email sent by AI agents and scripts
@@ -140,6 +153,10 @@ The agent gets these tools, and the server's instructions give it Likelyread's r
 | `list_campaigns` | Open rate and median time to open per campaign |
 | `get_stats` | Totals, timeline, busiest hours |
 | `sender_health` | SPF/DKIM/DMARC checks, safe daily pace, open-rate trend |
+| `mark_replied` | Marks an email replied to, or not |
+| `list_systems` | Outreach systems, their tests, rates and winners |
+| `save_system` | Creates or changes a system |
+| `save_experiment` | Logs what was tried in a system, or changes it |
 
 They run the same code as the API, so plans and limits are the same: on Likelyread Cloud's Free plan, the Pro tools and filters, and the daily limit, come back as an error the agent can read and pass on. The pixel URLs come from `PUBLIC_URL`, or `https://DOMAIN` on a self-hosted server, never from the address the agent called, so an agent on the server itself still puts the public address in emails. Whoever loads a pixel chooses its user agent, so the tools never return a hit's user agent or IP.
 

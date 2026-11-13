@@ -79,8 +79,12 @@ emails(
   recipients  TEXT,               -- JSON array of addresses
   sent_at     REAL,               -- unix seconds (server clock)
   campaign    TEXT NULL,          -- [added] free-text campaign name, NULL = uncategorized
-  sender      TEXT NULL           -- [added] address the email was sent from (lowercase)
+  sender      TEXT NULL,          -- [added] address the email was sent from (lowercase)
+  replied_at  REAL NULL           -- [added] first reply from a recipient, NULL = none known
 )
+systems(id, account_id, name, goal, target, notes, created_at)   -- [added] see 3.8
+categories(id, account_id, system_id, name, created_at)
+experiments(id, account_id, system_id, idea, campaign, note, category_values, created_at)
 hits(
   id        INTEGER PRIMARY KEY,
   email_id  TEXT,                 -- not a FK: hits for unknown ids are kept (registration may arrive late)
@@ -104,13 +108,15 @@ suppressions(
 | `GET` | `/api/emails?limit=50` | bearer | Recent emails with a summary (see 3.5). **[added]** Filters `campaign` (`__none__` = uncategorized), `sender`, `q`, `status` (`opened`, `not_opened`, `prefetch_only`), `offset`; total in `X-Total-Count`. |
 | `GET` | `/api/emails/{id}` | bearer | One email plus its full hit list with a classification for each hit. |
 | `DELETE` | `/api/emails/{id}` | bearer | Deletes an email and its hits. |
-| `PATCH` | `/api/emails/{id}` | bearer | **[added]** Set `{campaign}` (or `null`). |
+| `PATCH` | `/api/emails/{id}` | bearer | **[added]** Set `{campaign}` (or `null`) and/or `{replied: true|false}`; only the keys sent change. |
+| `POST` | `/api/emails/{id}/reply` | bearer | **[added]** A reply the extension saw in Gmail: `{from, age}`. Recorded only when `from` is one of the email's recipients; keeps the earliest reply, never before the send. |
+| `GET`, `POST`, `PATCH`, `DELETE` | `/api/systems[/{id}]`, `/api/systems/{id}/categories`, `/api/categories/{id}`, `/api/systems/{id}/experiments`, `/api/experiments/{id}` | bearer | **[added]** Systems and experiments (3.8). |
 | `GET` | `/api/campaigns` | bearer | **[added]** Per-campaign stats: emails, opened, open rate, opens, prefetch-only, median time to first open, last open, last sent. |
 | `PATCH` | `/api/campaigns/{name}` | bearer | **[added]** Rename a campaign (`__none__` targets uncategorized emails). |
 | `GET` | `/api/senders` | bearer | **[added]** Addresses emails were sent from, with counts. |
 | `GET` | `/api/stats?campaign=&sender=&days=30&tz=` | bearer | **[added]** Dashboard KPIs, daily timeline (sent vs opens) and opens by hour, both over the last `days`; recent opens. `tz` is minutes east of UTC. |
 | `GET` | `/api/ping` | bearer | Auth and connectivity check, used by the extension's options page. |
-| `POST` | `/mcp` | bearer | **[added]** MCP endpoint for AI agents: streamable HTTP, stateless, plain JSON answers (the server never pushes). Same token, plans and limits as `/api/*`, through the same code. Tools: `account`, `new_pixel`, `text_to_html`, `track_email`, `list_emails`, `get_email`, `set_campaign`, `campaign_names`, `list_campaigns`, `get_stats`, `sender_health`; the server's instructions carry the agent skill's rules. On the cloud, apps that sign in get the results tools only, Claude Code apart ([docs/CLOUD.md](docs/CLOUD.md)). |
+| `POST` | `/mcp` | bearer | **[added]** MCP endpoint for AI agents: streamable HTTP, stateless, plain JSON answers (the server never pushes). Same token, plans and limits as `/api/*`, through the same code. Tools: `account`, `new_pixel`, `text_to_html`, `track_email`, `list_emails`, `get_email`, `set_campaign`, `campaign_names`, `list_campaigns`, `get_stats`, `sender_health`, **[added]** `mark_replied`, `list_systems`, `save_system`, `save_experiment`; the server's instructions carry the agent skill's rules. On the cloud, apps that sign in get the results tools only, Claude Code apart ([docs/CLOUD.md](docs/CLOUD.md)). |
 | `GET` | `/healthz` | public | Liveness check. |
 | `GET` | `/robots.txt` | public | **[added]** Keeps crawlers away from `/p/` (a fetch would log an open), `/api/`, `/auth/`, `/oauth/` and `/mcp`, and leaves `/` crawlable so that search engines read its noindex. Every response also carries `X-Robots-Tag: noindex, nofollow`: a server is not a website, and the product's page is likelyread.com. |
 
@@ -141,9 +147,12 @@ Classification is computed at read time so the rules can be improved later witho
   "id": "…", "subject": "…", "recipients": ["…"], "sent_at": 0,
   "opens": 2, "first_open": 0, "last_open": 0,
   "prefetch": 1, "self": 3,
-  "campaign": null, "sender": "you@example.com", "status": "opened"
+  "campaign": null, "sender": "you@example.com", "status": "opened",
+  "replied_at": null
 }
 ```
+
+**[added]** `status` stays about opens; a reply is the separate `replied_at`. The list filter `status=replied` returns emails with a reply. Campaign rows and `/api/stats` add `replied`, `reply_rate` (replied / tracked emails) and `median_time_to_reply`.
 
 ### 3.6 Security
 - The bearer token is compared in constant time.
@@ -165,6 +174,16 @@ Served at `https://{domain}/`. Sign in with `LIKELYREAD_TOKEN` (kept for the tab
 - Global campaign and sender (From address) filters apply to every view.
 
 Open rate = emails with at least one `open` hit / tracked emails. Prefetch-only emails are not counted as opened.
+
+**[added]** Replies: reply rate and time to reply on the Overview and per campaign, a Replied filter in Emails, and "Mark as replied" on an email's page.
+
+### 3.8 Systems [added]
+
+A system is a recurring outreach effort ("Cold emails to game founders") with a goal metric (`reply_rate` or `open_rate`) and an optional target (0 to 1). Its experiments (called tests in the dashboard) are what the user tries: an idea, the campaign whose emails test it and an optional note. Numbers are computed at read time from the emails of the system's campaigns: each experiment's open and reply rates, the system's current value of its goal and its health (`on_target`, `below_target`, `not_measured` without a target or emails). Winners come from the statistics below, never from a hand-set verdict. The dashboard's system page has three tabs: Results (one plain sentence per category and a suggested next step), Tests (create one in a guided panel, pre-filled with the last test's values) and Details (the statistics and the CSV). Agents read the same with `list_systems`. Renaming a campaign renames it in experiments. Pro on Likelyread Cloud (`features.systems`).
+
+The user names the **categories** a system varies (Hook, Link, Length, Targeting...; none by default), and each experiment has at most one free-text value in each (`values: {category id: value}`); its campaign's emails inherit them. For every category, each value gets its emails, open and reply rates and a 95% Wilson interval of the goal metric. The two best values are compared with a two-sided two-proportion z-test: a value is the clear `winner` when p < 0.05 and both have at least 10 emails; otherwise the result says about how many more emails per value would tell them apart (80% power at the current rates). `GET /api/systems/{id}?value=<category id>:<value>` filters the whole system to the matching experiments (any chosen value within a category, every category; an empty value selects "not set"). The dashboard warns when a new experiment changes more than one category at once, since the results could not say which change worked.
+
+`GET /api/systems/{id}/stats` (same filters) works per email of the system's experiments: for each value, the goal rate of its emails against the other values of its category, the difference and a two-proportion test; the correlation (phi) matrix of every value and the outcomes opened and replied; and the pairs of values from different categories that went out together (r ≥ 0.8), whose effects cannot be told apart. `GET /api/systems/{id}/export.csv` gives one row per email (its experiment, verdict, value per category, opened, opens, replied, time to reply), without subjects or recipients; text a spreadsheet would run as a formula is prefixed with `'`.
 
 ---
 
@@ -206,6 +225,8 @@ The server-side grace window (3.4) covers the compose preview.
   - two red ticks: **Opened** or **Opened ×N**. The tooltip gives the last open as relative time.
 - The message's own pixel is the last one outside quoted history; pixels inside a quote belong to earlier emails and get no status.
 - The content script asks the service worker (message `status`, at most 20 ids), which calls `GET /api/emails/{id}` for each. A status is asked again once it is a minute old, at the next DOM change.
+- **[added]** **Replied**: once a recipient has answered (`replied_at`), the ticks say *Replied* with its relative time.
+- **[added]** Reply detection: in DOM order, a message whose sender is neither the account nor one of its send-as addresses answers the nearest own message above it; when that message carries a pixel, the content script sends `reply` `{id, from, age}` once per page and the service worker calls `POST /api/emails/{id}/reply`. The server keeps it only if `from` is a recipient. Replies are seen only in conversations the user opens in Gmail; a collapsed own email shows no pixel, so a reply under it is reported once it is expanded. Nothing of the reply's content leaves Gmail.
 - No answer, no ticks: an id the server does not know (404), one past the Free plan's history (402), or a failed request shows nothing rather than a guess. The words are the dashboard's: "opened", never "read".
 
 ### 4.6 Popup

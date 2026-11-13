@@ -28,16 +28,18 @@ Most trackers count every image load as an open. Likelyread sets aside your own 
 
 What you get:
 - A red eye next to Send: tracking on or off for each email, and a note after each send that confirms it is tracked
-- Ticks on the emails you sent, right in Gmail: one grey tick while nobody has opened it, two red ticks once someone has
+- Ticks on the emails you sent, right in Gmail: one grey tick while nobody has opened it, two red ticks once someone has, and "Replied" once a recipient answers
 - A campaign picker in the compose window: choose or create a campaign without leaving Gmail
 - The address you sent from, including send-as aliases
 - A toolbar popup with every tracked email and its status
 - A dashboard: every hit with its reason, and on Pro, open rates per campaign, time to first open and busiest hours
+- Replies: the reply rate and time to reply of every campaign, from the answers you open in Gmail
+- Systems on Pro: say what you change in your outreach (hook, link, targeting...), test one change at a time, and see in plain words which option gets more replies
 - Sender health on Pro: checks that each address you send from is set up so inboxes trust it, suggests a safe daily pace for new addresses, and warns when opens drop
 - An MCP server, a command-line tool and an agent skill, so AI agents and scripts can track the emails they send
 
 Two ways to use it:
-- Likelyread Cloud: click Sign in with Google in the extension's settings and you are ready. The Free plan tracks every email with no signature added to it and keeps 30 days of history. Pro (from €3 a month plus VAT, billed yearly) adds campaign analytics, charts, filters and unlimited history.
+- Likelyread Cloud: click Sign in with Google in the extension's settings and you are ready. The Free plan tracks every email with no signature added to it and keeps 30 days of history. Pro (from €3 a month plus VAT, billed yearly) adds campaign analytics, Systems, charts, filters and unlimited history.
 - Self-hosted: install the open-source server on any small Linux machine with one command and paste the setup link it prints. Every feature, free, and your data never leaves your server.
 
 The extension has no analytics and loads no code from the internet. Open source, MIT licence.
@@ -62,7 +64,7 @@ The compose window in `s1-compose.png` is a neutral mock-up with the real extens
 **Single purpose:**
 
 ```
-Show the user whether the emails they send from Gmail have been opened, using the Likelyread Cloud service or an open-tracking server that the user hosts themselves.
+Show the user whether the emails they send from Gmail have been opened or answered, using the Likelyread Cloud service or an open-tracking server that the user hosts themselves.
 ```
 
 **Permission justifications:**
@@ -72,7 +74,7 @@ Show the user whether the emails they send from Gmail have been opened, using th
 | `storage` | Saves the user's own settings on their device: the server address and access token (Likelyread Cloud or their own server), whether tracking is on by default, the default campaign, the addresses they send from, and a queue of emails waiting to be registered when their server is unreachable. |
 | `declarativeNetRequest` | Blocks the user's own browser from loading their own tracking images directly, so viewing their own sent email is not counted as an open. The single rule is limited to the user's own server address. |
 | `alarms` | Retries registering a sent email with the user's server after a network failure (backoff up to 7 days), even after the service worker has been suspended. |
-| Host permission `https://mail.google.com/*` | The content script adds the tracking switch and campaign picker to Gmail's compose window, adds the tracking image to the email when the user clicks Send, and recognises the user's own sent emails so their views are not counted as opens. |
+| Host permission `https://mail.google.com/*` | The content script adds the tracking switch and campaign picker to Gmail's compose window, adds the tracking image to the email when the user clicks Send, recognises the user's own sent emails so their views are not counted as opens, and, in a conversation the user opens, notices a recipient's answer to a tracked email (only the answer's sender address and time are sent, never its content). |
 | Host permission `https://app.likelyread.com/*` | The Likelyread Cloud service. The extension registers each tracked email with it and reads the user's tracking results from it, for users who sign in with Google instead of running their own server. The site is also listed under `externally_connectable`, so the sign-in page can hand the account token to the extension; the extension accepts that message only from this origin. |
 | Optional host permissions `https://*/*`, `http://localhost/*`, `http://127.0.0.1/*` | The user's server is self-hosted, so its address is unknown when the extension is built. The extension requests access to exactly one origin, the server address the user enters, at the moment they click Save in the settings. No access is requested otherwise. The localhost entries are only used when someone runs the server on their own computer for development. |
 
@@ -80,7 +82,7 @@ Show the user whether the emails they send from Gmail have been opened, using th
 
 **Data usage, what is collected:** tick
 
-- **Personally identifiable information**: the email addresses of recipients and of the sender, and for Likelyread Cloud the user's own Google account email (from sign-in).
+- **Personally identifiable information**: the email addresses of recipients and of the sender, the address of a recipient who answered a tracked email (checked against the recipients, only the time of the answer is kept), and for Likelyread Cloud the user's own Google account email (from sign-in).
 - **Personal communications**: the subject line of each tracked email.
 - **Authentication information**: the access token for Likelyread Cloud or for the user's own server, stored on the device and sent only to that server.
 
