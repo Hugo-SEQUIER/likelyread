@@ -83,6 +83,8 @@ Everything below is a one-time setup on the cloud server.
    git clone https://github.com/Hugo-SEQUIER/likelyread.git /opt/likelyread
    cd /opt/likelyread/deploy
    cp cloud.env.example .env    # fill in every value
+   chmod 600 .env               # secrets: readable by root only
+   mkdir -p data && chmod 700 data   # recipient data and backups
    docker compose up -d --build
    curl -fsS https://app.likelyread.com/api/config
    ```
